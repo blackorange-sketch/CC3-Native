@@ -1,0 +1,33 @@
+name: Analyze game binary
+
+# Manual run: pulls cnc3game.dat from the private game repo and lists its imports.
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download game binary from private repo
+        env:
+          GH_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+        run: |
+          mkdir -p game
+          gh release download game-binary \
+            --repo ${{ github.repository_owner }}/cc3-private \
+            --pattern 'cnc3game.dat' --dir game
+
+      - name: List imports
+        run: |
+          python3 tools/pe_imports.py game/cnc3game.dat > imports.txt
+          python3 tools/pe_imports.py game/cnc3game.dat --json > imports.json
+          head -40 imports.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cc3-imports
+          path: |
+            imports.txt
+            imports.json

@@ -1,0 +1,28 @@
+# Game data must never be committed
+*.big
+*.dat
+*.exe
+*.dll
+*.vp6
+*.manifest
+game/
+gamefiles/
+
+# Build output
+build/
+out/
+*.apk
+*.aab
+*.so
+*.o
+.gradle/
+local.properties
+.cxx/
+.externalNativeBuild/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+__pycache__/
