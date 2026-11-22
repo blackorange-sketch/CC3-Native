@@ -1,0 +1,598 @@
+File: game/cnc3game.dat
+Machine: x86  ImageBase: 0x400000  Entry: 0xa2c7
+
+Sections:
+  .text    va=0x00001000 vsize=0x624000 raw=0x624000
+  .rdata   va=0x00625000 vsize=0x14e000 raw=0x14e000
+  .data    va=0x00773000 vsize=0xb9000 raw=0xb9000
+  rts.ver  va=0x0082c000 vsize=0x1000 raw=0x1000
+  .tls     va=0x0082d000 vsize=0x1000 raw=0x1000
+  .rsrc    va=0x0082e000 vsize=0x1a000 raw=0x1a000
+  ars      va=0x00848000 vsize=0x58c000 raw=0x58c000
+  est      va=0x00dd4000 vsize=0x8000 raw=0x8000
+  artem    va=0x00ddc000 vsize=0x2e2000 raw=0x2e2000
+  celare   va=0x010be000 vsize=0x6000 raw=0x6000
+  .securom va=0x010c4000 vsize=0xb0c000 raw=0xfe000
+  .memory  va=0x01bd0000 vsize=0x118e36c raw=0x118e36c
+  ! non-standard sections (possible protection): rts.ver, ars, est, artem, celare, .securom, .memory
+
+Imports: 17 DLLs, 545 functions
+
+[ADVAPI32.dll] (12)
+  RegCreateKeyExA
+  AdjustTokenPrivileges
+  LookupPrivilegeValueA
+  RegSetValueExA
+  RegOpenKeyExA
+  RegQueryValueExA
+  RegOpenKeyExW
+  RegQueryValueExW
+  RegCloseKey
+  OpenProcessToken
+  OpenThreadToken
+  GetUserNameA
+
+[d3dx9_29.dll] (19)
+  D3DXVec3CatmullRom
+  D3DXMatrixRotationAxis
+  D3DXMatrixRotationY
+  D3DXMatrixRotationX
+  D3DXMatrixRotationZ
+  D3DXVec4Transform
+  D3DXFilterTexture
+  D3DXMatrixTranspose
+  D3DXMatrixInverse
+  D3DXLoadSurfaceFromMemory
+  D3DXGetFVFVertexSize
+  D3DXCreateTexture
+  D3DXCreateTextureFromFileInMemoryEx
+  D3DXCreateVolumeTextureFromFileInMemoryEx
+  D3DXCreateEffect
+  D3DXCreateCubeTextureFromFileInMemoryEx
+  D3DXGetImageInfoFromFileInMemory
+  D3DXLoadSurfaceFromSurface
+  D3DXCreateEffectFromFileA
+
+[DINPUT8.dll] (1)
+  DirectInput8Create
+
+[DSOUND.dll] (5)
+  #ordinal 1
+  #ordinal 3
+  #ordinal 8
+  #ordinal 6
+  #ordinal 9
+
+[GDI32.dll] (22)
+  TextOutA
+  CreateFontIndirectA
+  CreateDIBSection
+  CreateCompatibleDC
+  SetBkMode
+  DeleteDC
+  SelectObject
+  BitBlt
+  DeleteObject
+  ExtTextOutW
+  SetBkColor
+  SetTextColor
+  GetGlyphIndicesW
+  CreateFontA
+  GetTextMetricsA
+  CreateDIBitmap
+  SetDeviceGammaRamp
+  GetTextExtentPoint32W
+  GetCharABCWidthsI
+  GetTextExtentPointI
+  GetStockObject
+  SetMapMode
+
+[IMM32.dll] (12)
+  ImmAssociateContext
+  ImmNotifyIME
+  ImmGetCompositionStringW
+  ImmGetProperty
+  ImmGetContext
+  ImmCreateContext
+  ImmGetCandidateListW
+  ImmGetCandidateListCountW
+  ImmDestroyContext
+  ImmReleaseContext
+  ImmGetIMEFileNameA
+  ImmSetOpenStatus
+
+[KERNEL32.dll] (154)
+  TlsAlloc
+  HeapAlloc
+  HeapCreate
+  GetCommandLineA
+  GetModuleHandleExA
+  TerminateProcess
+  GlobalFree
+  FreeConsole
+  WriteConsoleOutputA
+  GetTickCount
+  GetConsoleScreenBufferInfo
+  ReadConsoleInputA
+  GetNumberOfConsoleInputEvents
+  GetStdHandle
+  WriteFile
+  SetConsoleScreenBufferSize
+  SetConsoleWindowInfo
+  CreateFileA
+  GetComputerNameA
+  GetLocalTime
+  GetModuleFileNameA
+  ReadFile
+  SetNamedPipeHandleState
+  OutputDebugStringA
+  EnterCriticalSection
+  InterlockedIncrement
+  ReleaseMutex
+  InterlockedDecrement
+  LeaveCriticalSection
+  GetCurrentThreadId
+  GlobalUnlock
+  GlobalLock
+  GlobalAlloc
+  TlsSetValue
+  ResumeThread
+  Thread32First
+  Sleep
+  IsBadCodePtr
+  ReadProcessMemory
+  GetCurrentThread
+  GlobalSize
+  GlobalReAlloc
+  SetConsoleTitleA
+  GetConsoleTitleA
+  SetConsoleCtrlHandler
+  SetConsoleCursorInfo
+  SetConsoleMode
+  AllocConsole
+  CopyFileA
+  DeleteCriticalSection
+  SetFilePointer
+  ExitProcess
+  GetExitCodeThread
+  WaitForSingleObject
+  CreateThread
+  SuspendThread
+  VirtualQuery
+  DeleteFileA
+  SetUnhandledExceptionFilter
+  CreateMutexA
+  GetTimeFormatA
+  RaiseException
+  InitializeCriticalSection
+  GetACP
+  GetLocaleInfoA
+  GetThreadLocale
+  GetVersionExA
+  GetCurrentProcessId
+  CreateToolhelp32Snapshot
+  GetModuleHandleA
+  IsBadReadPtr
+  GetCurrentProcess
+  CloseHandle
+  Thread32Next
+  VirtualFree
+  VirtualAlloc
+  InterlockedExchangeAdd
+  TryEnterCriticalSection
+  QueueUserAPC
+  SetThreadIdealProcessor
+  DuplicateHandle
+  TlsGetValue
+  GetThreadPriority
+  SleepEx
+  GetLogicalDrives
+  SetEndOfFile
+  GetFileSizeEx
+  GetDiskFreeSpaceA
+  SetThreadPriority
+  CreateEventA
+  ReleaseSemaphore
+  CreateSemaphoreA
+  CreateFileW
+  DosDateTimeToFileTime
+  SetFileTime
+  GetFileInformationByHandle
+  FileTimeToDosDateTime
+  GetFileSize
+  GlobalMemoryStatusEx
+  CreateProcessW
+  GetExitCodeProcess
+  GetCurrentDirectoryA
+  GetLocaleInfoW
+  LocalAlloc
+  LocalFree
+  SetErrorMode
+  MoveFileW
+  TerminateThread
+  FindNextFileW
+  RemoveDirectoryW
+  lstrcpyW
+  GetDiskFreeSpaceExW
+  GetTimeFormatW
+  GetDateFormatW
+  QueryPerformanceFrequency
+  InterlockedCompareExchange
+  GetStartupInfoA
+  QueryPerformanceCounter
+  GetSystemTimeAsFileTime
+  UnhandledExceptionFilter
+  IsDebuggerPresent
+  CreateDirectoryW
+  GetEnvironmentStrings
+  CreateProcessA
+  GetDateFormatA
+  FindFirstFileA
+  FindNextFileA
+  RemoveDirectoryA
+  GetTempPathA
+  CreateDirectoryA
+  GetTempFileNameA
+  GetPriorityClass
+  SetPriorityClass
+  GetSystemInfo
+  GetProcessAffinityMask
+  SetProcessAffinityMask
+  GetTimeZoneInformation
+  DeleteFileW
+  GetCommandLineW
+  CreateMutexW
+  SetCurrentDirectoryW
+  OpenEventA
+  LoadLibraryA
+  FindClose
+  GetProcAddress
+  GetLastError
+  FindFirstFileW
+  FreeLibrary
+  SetEvent
+  WideCharToMultiByte
+  GetModuleFileNameW
+  GetEnvironmentVariableA
+  MultiByteToWideChar
+  InterlockedExchange
+
+[MSVCR80.dll] (199)
+  _except_handler3
+  strtod
+  _setjmp3
+  longjmp
+  freopen
+  memchr
+  isalpha
+  iscntrl
+  islower
+  ispunct
+  _localtime32
+  _time32
+  _gmtime32
+  _mktime32
+  _difftime32
+  isupper
+  ldexp
+  frexp
+  setlocale
+  _strupr
+  _wcsicmp
+  isprint
+  fputc
+  printf
+  tmpnam
+  system
+  ungetc
+  __iob_func
+  _CItan
+  _CIlog
+  _CIatan
+  _endthreadex
+  _CIatan2
+  _CIlog10
+  _CIsqrt
+  _CIcos
+  _CIsin
+  _aligned_free
+  _beginthreadex
+  _fileno
+  _fstat64i32
+  fscanf
+  fgetc
+  rewind
+  _atoi64
+  strncat
+  ferror
+  feof
+  _aligned_malloc
+  srand
+  _wcsdup
+  clock
+  _mktime64
+  _gmtime64
+  isxdigit
+  qsort
+  _errno
+  rename
+  strcspn
+  strspn
+  _mbscmp
+  realloc
+  _mbsicmp
+  _mbslen
+  _stat64i32
+  strncat_s
+  strtok_s
+  _CIasin
+  _fpreset
+  _statusfp
+  _vsnwprintf
+  towupper
+  _finite
+  _CIexp
+  strncpy_s
+  _controlfp
+  remove
+  ?_open@@YAHPBDHH@Z
+  _close
+  _strnicmp
+  iswspace
+  wcschr
+  _isnan
+  mbstowcs
+  _snwprintf
+  vsprintf
+  tolower
+  ftell
+  _crt_debugger_hook
+  _controlfp_s
+  _invoke_watson
+  ?_type_info_dtor_internal_method@type_info@@QAEXXZ
+  _except_handler4_common
+  __set_app_type
+  __p__fmode
+  __p__commode
+  _adjust_fdiv
+  __setusermatherr
+  _configthreadlocale
+  _initterm_e
+  _initterm
+  _acmdln
+  _ismbblead
+  _XcptFilter
+  _cexit
+  __getmainargs
+  _amsg_exit
+  _decode_pointer
+  _onexit
+  _lock
+  __dllonexit
+  _encode_pointer
+  _unlock
+  ?terminate@@YAXXZ
+  _strlwr
+  _stricmp
+  _ui64toa
+  _i64toa
+  _itoa
+  _exit
+  _CxxThrowException
+  exit
+  _control87
+  memmove
+  vsprintf_s
+  sprintf
+  _ultoa
+  _snprintf
+  _vsnprintf
+  strncpy
+  atoi
+  memcpy
+  strrchr
+  strchr
+  fprintf
+  strstr
+  memset
+  strpbrk
+  strtoul
+  atol
+  malloc
+  calloc
+  free
+  _CIfmod
+  _set_SSE2_enable
+  getenv
+  _fullpath
+  fgets
+  _wstat64i32
+  asctime
+  strftime
+  strcat_s
+  strcpy_s
+  iswascii
+  fseek
+  fread
+  toupper
+  _localtime64
+  fwrite
+  isalnum
+  _unlink
+  strcoll
+  fopen
+  fputs
+  fflush
+  _CIpow
+  _CIacos
+  wcsncpy_s
+  iswalpha
+  _wfopen
+  fclose
+  wcstok
+  _wtof
+  rand
+  wcsstr
+  wcsrchr
+  iswgraph
+  swprintf_s
+  wcsncpy
+  _itow
+  _wtoi
+  isdigit
+  _wsplitpath
+  iswdigit
+  iswalnum
+  strtok
+  strncmp
+  isspace
+  atof
+  strtol
+  _time64
+  towlower
+  _memicmp
+  puts
+  ceil
+  __CxxFrameHandler3
+  sscanf
+  floor
+  abort
+
+[NETAPI32.dll] (1)
+  Netbios
+
+[ole32.dll] (7)
+  CoInitialize
+  CoUninitialize
+  StringFromGUID2
+  CoTaskMemFree
+  CoCreateInstance
+  OleRun
+  CoGetObject
+
+[OLEAUT32.dll] (2)
+  #ordinal 6
+  #ordinal 2
+
+[SHELL32.dll] (4)
+  SHGetSpecialFolderPathW
+  ShellExecuteW
+  ShellExecuteA
+  SHGetSpecialFolderPathA
+
+[SHLWAPI.dll] (2)
+  PathFindFileNameA
+  PathRemoveExtensionA
+
+[USER32.dll] (63)
+  PostQuitMessage
+  SetForegroundWindow
+  LoadIconA
+  GetWindowRect
+  GetClientRect
+  SetFocus
+  RegisterWindowMessageA
+  GetKeyboardLayout
+  GetKeyboardLayoutList
+  SetWindowTextW
+  EnableMenuItem
+  MessageBoxW
+  wsprintfW
+  IsIconic
+  DispatchMessageA
+  TranslateMessage
+  GetMessageA
+  PeekMessageA
+  GetKeyState
+  ScreenToClient
+  GetCursorPos
+  SetCursorPos
+  ClientToScreen
+  SetCursor
+  KillTimer
+  SetTimer
+  GetAsyncKeyState
+  FindWindowW
+  MessageBoxA
+  wsprintfA
+  GetWindowLongA
+  EnumThreadWindows
+  CloseClipboard
+  SetClipboardData
+  EmptyClipboard
+  OpenClipboard
+  DrawMenuBar
+  DeleteMenu
+  GetSystemMenu
+  FindWindowA
+  SendDlgItemMessageA
+  SetWindowTextA
+  GetDlgItem
+  EndDialog
+  DialogBoxIndirectParamA
+  DefWindowProcW
+  AdjustWindowRect
+  UpdateWindow
+  GetSystemMetrics
+  RegisterClassW
+  CreateWindowExW
+  ClipCursor
+  ShowWindow
+  SetWindowPos
+  DefWindowProcA
+  IsWindowUnicode
+  GetDoubleClickTime
+  GetForegroundWindow
+  GetDesktopWindow
+  LoadCursorFromFileA
+  GetDC
+  ReleaseDC
+  LoadCursorA
+
+[WININET.dll] (1)
+  InternetCrackUrlA
+
+[WINMM.dll] (3)
+  timeBeginPeriod
+  timeEndPeriod
+  timeGetTime
+
+[WS2_32.dll] (38)
+  #ordinal 115
+  #ordinal 9
+  #ordinal 8
+  #ordinal 15
+  #ordinal 14
+  #ordinal 3
+  #ordinal 4
+  #ordinal 23
+  #ordinal 11
+  #ordinal 19
+  #ordinal 57
+  #ordinal 52
+  #ordinal 22
+  #ordinal 21
+  #ordinal 10
+  #ordinal 6
+  #ordinal 20
+  #ordinal 16
+  #ordinal 13
+  #ordinal 1
+  #ordinal 151
+  #ordinal 12
+  #ordinal 7
+  WSACreateEvent
+  WSACloseEvent
+  #ordinal 116
+  #ordinal 18
+  #ordinal 17
+  #ordinal 2
+  WSASetEvent
+  WSARecv
+  WSARecvFrom
+  WSAResetEvent
+  WSAWaitForMultipleEvents
+  WSAGetOverlappedResult
+  #ordinal 5
+  WSAIoctl
+  #ordinal 111

@@ -1,27 +1,21 @@
 File: game/cnc3game.dat
-Machine: x86  ImageBase: 0x400000  Entry: 0xa2c7
+Machine: x86  ImageBase: 0x400000  Entry: 0xa2b1
 
 Sections:
-  .text    va=0x00001000 vsize=0x624000 raw=0x624000
-  .rdata   va=0x00625000 vsize=0x14e000 raw=0x14e000
-  .data    va=0x00773000 vsize=0xb9000 raw=0xb9000
-  rts.ver  va=0x0082c000 vsize=0x1000 raw=0x1000
-  .tls     va=0x0082d000 vsize=0x1000 raw=0x1000
-  .rsrc    va=0x0082e000 vsize=0x1a000 raw=0x1a000
-  ars      va=0x00848000 vsize=0x58c000 raw=0x58c000
-  est      va=0x00dd4000 vsize=0x8000 raw=0x8000
-  artem    va=0x00ddc000 vsize=0x2e2000 raw=0x2e2000
-  celare   va=0x010be000 vsize=0x6000 raw=0x6000
-  .securom va=0x010c4000 vsize=0xb0c000 raw=0xfe000
-  .memory  va=0x01bd0000 vsize=0x118e36c raw=0x118e36c
-  ! non-standard sections (possible protection): rts.ver, ars, est, artem, celare, .securom, .memory
+  .text    va=0x00001000 vsize=0x62b75e raw=0x62c000
+  .rdata   va=0x0062d000 vsize=0x14e39e raw=0x14f000
+  .data    va=0x0077c000 vsize=0xb8b20 raw=0x66000
+  rts.ver  va=0x00835000 vsize=0x200 raw=0x1000
+  .tls     va=0x00836000 vsize=0x9 raw=0x1000
+  .rsrc    va=0x00837000 vsize=0x7a9b54 raw=0x7aa000
+  ! non-standard sections (possible protection): rts.ver
 
-Imports: 17 DLLs, 545 functions
+Imports: 17 DLLs, 557 functions
 
 [ADVAPI32.dll] (12)
-  RegCreateKeyExA
   AdjustTokenPrivileges
   LookupPrivilegeValueA
+  RegCreateKeyExA
   RegSetValueExA
   RegOpenKeyExA
   RegQueryValueExA
@@ -34,58 +28,58 @@ Imports: 17 DLLs, 545 functions
 
 [d3dx9_29.dll] (19)
   D3DXVec3CatmullRom
+  D3DXFilterTexture
+  D3DXLoadSurfaceFromSurface
+  D3DXCreateCubeTextureFromFileInMemoryEx
+  D3DXCreateVolumeTextureFromFileInMemoryEx
+  D3DXCreateTextureFromFileInMemoryEx
   D3DXMatrixRotationAxis
   D3DXMatrixRotationY
   D3DXMatrixRotationX
   D3DXMatrixRotationZ
   D3DXVec4Transform
-  D3DXFilterTexture
+  D3DXGetFVFVertexSize
+  D3DXCreateEffectFromFileA
+  D3DXCreateEffect
   D3DXMatrixTranspose
   D3DXMatrixInverse
   D3DXLoadSurfaceFromMemory
-  D3DXGetFVFVertexSize
   D3DXCreateTexture
-  D3DXCreateTextureFromFileInMemoryEx
-  D3DXCreateVolumeTextureFromFileInMemoryEx
-  D3DXCreateEffect
-  D3DXCreateCubeTextureFromFileInMemoryEx
   D3DXGetImageInfoFromFileInMemory
-  D3DXLoadSurfaceFromSurface
-  D3DXCreateEffectFromFileA
 
 [DINPUT8.dll] (1)
   DirectInput8Create
 
 [DSOUND.dll] (5)
-  #ordinal 1
-  #ordinal 3
+  #ordinal 9
   #ordinal 8
   #ordinal 6
-  #ordinal 9
+  #ordinal 1
+  #ordinal 3
 
 [GDI32.dll] (22)
-  TextOutA
-  CreateFontIndirectA
-  CreateDIBSection
-  CreateCompatibleDC
-  SetBkMode
-  DeleteDC
-  SelectObject
-  BitBlt
+  GetTextMetricsA
+  GetGlyphIndicesW
   DeleteObject
-  ExtTextOutW
+  DeleteDC
+  CreateFontA
   SetBkColor
   SetTextColor
-  GetGlyphIndicesW
-  CreateFontA
-  GetTextMetricsA
-  CreateDIBitmap
-  SetDeviceGammaRamp
+  CreateDIBSection
+  SelectObject
+  CreateFontIndirectA
+  ExtTextOutW
   GetTextExtentPoint32W
   GetCharABCWidthsI
+  BitBlt
   GetTextExtentPointI
-  GetStockObject
+  CreateCompatibleDC
+  CreateDIBitmap
+  TextOutA
+  SetBkMode
   SetMapMode
+  GetStockObject
+  SetDeviceGammaRamp
 
 [IMM32.dll] (12)
   ImmAssociateContext
@@ -101,7 +95,7 @@ Imports: 17 DLLs, 545 functions
   ImmGetIMEFileNameA
   ImmSetOpenStatus
 
-[KERNEL32.dll] (154)
+[KERNEL32.dll] (157)
   TlsAlloc
   HeapAlloc
   HeapCreate
@@ -135,8 +129,8 @@ Imports: 17 DLLs, 545 functions
   GlobalUnlock
   GlobalLock
   GlobalAlloc
+  Thread32Next
   TlsSetValue
-  ResumeThread
   Thread32First
   Sleep
   IsBadCodePtr
@@ -169,31 +163,39 @@ Imports: 17 DLLs, 545 functions
   GetLocaleInfoA
   GetThreadLocale
   GetVersionExA
+  GetFullPathNameA
   GetCurrentProcessId
   CreateToolhelp32Snapshot
   GetModuleHandleA
   IsBadReadPtr
   GetCurrentProcess
-  CloseHandle
-  Thread32Next
+  GetProcAddress
+  ResumeThread
+  FindClose
+  GetProcessHeap
+  HeapFree
   VirtualFree
   VirtualAlloc
   InterlockedExchangeAdd
+  SleepEx
+  DuplicateHandle
+  TlsGetValue
   TryEnterCriticalSection
   QueueUserAPC
   SetThreadIdealProcessor
-  DuplicateHandle
-  TlsGetValue
   GetThreadPriority
-  SleepEx
   GetLogicalDrives
   SetEndOfFile
   GetFileSizeEx
   GetDiskFreeSpaceA
-  SetThreadPriority
-  CreateEventA
+  LocalAlloc
+  LocalFree
+  SetErrorMode
   ReleaseSemaphore
   CreateSemaphoreA
+  SetThreadPriority
+  CreateEventA
+  GetLocaleInfoW
   CreateFileW
   DosDateTimeToFileTime
   SetFileTime
@@ -203,11 +205,6 @@ Imports: 17 DLLs, 545 functions
   GlobalMemoryStatusEx
   CreateProcessW
   GetExitCodeProcess
-  GetCurrentDirectoryA
-  GetLocaleInfoW
-  LocalAlloc
-  LocalFree
-  SetErrorMode
   MoveFileW
   TerminateThread
   FindNextFileW
@@ -216,13 +213,14 @@ Imports: 17 DLLs, 545 functions
   GetDiskFreeSpaceExW
   GetTimeFormatW
   GetDateFormatW
-  QueryPerformanceFrequency
   InterlockedCompareExchange
   GetStartupInfoA
   QueryPerformanceCounter
   GetSystemTimeAsFileTime
   UnhandledExceptionFilter
   IsDebuggerPresent
+  GetCurrentDirectoryA
+  QueryPerformanceFrequency
   CreateDirectoryW
   GetEnvironmentStrings
   CreateProcessA
@@ -240,25 +238,36 @@ Imports: 17 DLLs, 545 functions
   SetProcessAffinityMask
   GetTimeZoneInformation
   DeleteFileW
-  GetCommandLineW
-  CreateMutexW
-  SetCurrentDirectoryW
-  OpenEventA
-  LoadLibraryA
-  FindClose
-  GetProcAddress
   GetLastError
-  FindFirstFileW
-  FreeLibrary
-  SetEvent
-  WideCharToMultiByte
-  GetModuleFileNameW
   GetEnvironmentVariableA
+  FreeLibrary
+  SetCurrentDirectoryW
+  FindFirstFileW
+  GetCommandLineW
+  WideCharToMultiByte
+  LoadLibraryA
+  SetEvent
+  CloseHandle
+  CreateMutexW
+  GetModuleFileNameW
+  OpenEventA
   MultiByteToWideChar
   InterlockedExchange
 
 [MSVCR80.dll] (199)
   _except_handler3
+  _fpreset
+  _statusfp
+  _time32
+  _gmtime32
+  _mktime32
+  _difftime32
+  _strupr
+  _wcsicmp
+  isprint
+  fputc
+  printf
+  strcoll
   strtod
   _setjmp3
   longjmp
@@ -268,20 +277,10 @@ Imports: 17 DLLs, 545 functions
   iscntrl
   islower
   ispunct
-  _localtime32
-  _time32
-  _gmtime32
-  _mktime32
-  _difftime32
   isupper
   ldexp
   frexp
   setlocale
-  _strupr
-  _wcsicmp
-  isprint
-  fputc
-  printf
   tmpnam
   system
   ungetc
@@ -296,13 +295,17 @@ Imports: 17 DLLs, 545 functions
   _CIcos
   _CIsin
   _aligned_free
-  _beginthreadex
+  _finite
+  _controlfp
+  strncat_s
+  strtok_s
+  strncpy_s
   _fileno
   _fstat64i32
   fscanf
   fgetc
   rewind
-  _atoi64
+  _CIexp
   strncat
   ferror
   feof
@@ -312,40 +315,34 @@ Imports: 17 DLLs, 545 functions
   clock
   _mktime64
   _gmtime64
+  _beginthreadex
   isxdigit
+  _atoi64
   qsort
   _errno
   rename
   strcspn
   strspn
+  _stat64i32
   _mbscmp
   realloc
   _mbsicmp
+  strcat_s
   _mbslen
-  _stat64i32
-  strncat_s
-  strtok_s
   _CIasin
-  _fpreset
-  _statusfp
-  _vsnwprintf
-  towupper
-  _finite
-  _CIexp
-  strncpy_s
-  _controlfp
+  strcpy_s
   remove
   ?_open@@YAHPBDHH@Z
   _close
   _strnicmp
-  iswspace
   wcschr
   _isnan
   mbstowcs
   _snwprintf
   vsprintf
-  tolower
   ftell
+  _CIfmod
+  _set_SSE2_enable
   _crt_debugger_hook
   _controlfp_s
   _invoke_watson
@@ -365,13 +362,13 @@ Imports: 17 DLLs, 545 functions
   _cexit
   __getmainargs
   _amsg_exit
+  ?terminate@@YAXXZ
   _decode_pointer
   _onexit
   _lock
-  __dllonexit
   _encode_pointer
+  __dllonexit
   _unlock
-  ?terminate@@YAXXZ
   _strlwr
   _stricmp
   _ui64toa
@@ -395,31 +392,25 @@ Imports: 17 DLLs, 545 functions
   fprintf
   strstr
   memset
-  strpbrk
-  strtoul
   atol
-  malloc
   calloc
+  strpbrk
+  malloc
+  strtoul
   free
-  _CIfmod
-  _set_SSE2_enable
   getenv
   _fullpath
   fgets
   _wstat64i32
   asctime
   strftime
-  strcat_s
-  strcpy_s
   iswascii
   fseek
   fread
-  toupper
   _localtime64
   fwrite
   isalnum
   _unlink
-  strcoll
   fopen
   fputs
   fflush
@@ -428,11 +419,11 @@ Imports: 17 DLLs, 545 functions
   wcsncpy_s
   iswalpha
   _wfopen
+  _localtime32
   fclose
   wcstok
   _wtof
   rand
-  wcsstr
   wcsrchr
   iswgraph
   swprintf_s
@@ -445,18 +436,24 @@ Imports: 17 DLLs, 545 functions
   iswalnum
   strtok
   strncmp
-  isspace
   atof
   strtol
   _time64
-  towlower
-  _memicmp
   puts
-  ceil
-  __CxxFrameHandler3
-  sscanf
-  floor
   abort
+  floor
+  sscanf
+  __CxxFrameHandler3
+  ceil
+  _vsnwprintf
+  wcsstr
+  towupper
+  _memicmp
+  towlower
+  isspace
+  iswspace
+  tolower
+  toupper
 
 [NETAPI32.dll] (1)
   Netbios
@@ -465,39 +462,42 @@ Imports: 17 DLLs, 545 functions
   CoInitialize
   CoUninitialize
   StringFromGUID2
+  CoGetObject
   CoTaskMemFree
   CoCreateInstance
   OleRun
-  CoGetObject
 
 [OLEAUT32.dll] (2)
   #ordinal 6
   #ordinal 2
 
 [SHELL32.dll] (4)
-  SHGetSpecialFolderPathW
   ShellExecuteW
+  SHGetSpecialFolderPathW
   ShellExecuteA
   SHGetSpecialFolderPathA
 
-[SHLWAPI.dll] (2)
+[SHLWAPI.dll] (3)
   PathFindFileNameA
   PathRemoveExtensionA
+  PathFileExistsA
 
 [USER32.dll] (63)
-  PostQuitMessage
   SetForegroundWindow
-  LoadIconA
-  GetWindowRect
-  GetClientRect
   SetFocus
-  RegisterWindowMessageA
+  AdjustWindowRect
+  GetClientRect
   GetKeyboardLayout
   GetKeyboardLayoutList
   SetWindowTextW
   EnableMenuItem
   MessageBoxW
   wsprintfW
+  ReleaseDC
+  GetDC
+  GetDesktopWindow
+  GetDoubleClickTime
+  GetForegroundWindow
   IsIconic
   DispatchMessageA
   TranslateMessage
@@ -505,14 +505,9 @@ Imports: 17 DLLs, 545 functions
   PeekMessageA
   GetKeyState
   ScreenToClient
-  GetCursorPos
-  SetCursorPos
-  ClientToScreen
-  SetCursor
-  KillTimer
-  SetTimer
-  GetAsyncKeyState
+  RegisterWindowMessageA
   FindWindowW
+  PostQuitMessage
   MessageBoxA
   wsprintfA
   GetWindowLongA
@@ -530,63 +525,62 @@ Imports: 17 DLLs, 545 functions
   GetDlgItem
   EndDialog
   DialogBoxIndirectParamA
-  DefWindowProcW
-  AdjustWindowRect
-  UpdateWindow
-  GetSystemMetrics
-  RegisterClassW
-  CreateWindowExW
-  ClipCursor
-  ShowWindow
-  SetWindowPos
+  KillTimer
+  SetTimer
+  GetAsyncKeyState
   DefWindowProcA
+  GetSystemMetrics
+  UpdateWindow
+  RegisterClassW
+  DefWindowProcW
+  SetWindowPos
+  ClipCursor
+  LoadIconA
+  CreateWindowExW
+  ShowWindow
   IsWindowUnicode
-  GetDoubleClickTime
-  GetForegroundWindow
-  GetDesktopWindow
+  GetWindowRect
   LoadCursorFromFileA
-  GetDC
-  ReleaseDC
   LoadCursorA
+  SetCursor
+  ClientToScreen
+  SetCursorPos
+  GetCursorPos
 
-[WININET.dll] (1)
+[WININET.dll] (9)
   InternetCrackUrlA
+  InternetConnectA
+  InternetCloseHandle
+  HttpOpenRequestA
+  HttpAddRequestHeadersA
+  HttpSendRequestA
+  InternetQueryDataAvailable
+  InternetReadFile
+  InternetOpenA
 
 [WINMM.dll] (3)
   timeBeginPeriod
-  timeEndPeriod
   timeGetTime
+  timeEndPeriod
 
 [WS2_32.dll] (38)
-  #ordinal 115
-  #ordinal 9
-  #ordinal 8
-  #ordinal 15
-  #ordinal 14
-  #ordinal 3
-  #ordinal 4
-  #ordinal 23
   #ordinal 11
   #ordinal 19
+  #ordinal 111
   #ordinal 57
-  #ordinal 52
+  #ordinal 2
   #ordinal 22
   #ordinal 21
-  #ordinal 10
   #ordinal 6
   #ordinal 20
   #ordinal 16
   #ordinal 13
-  #ordinal 1
-  #ordinal 151
+  #ordinal 15
+  #ordinal 23
   #ordinal 12
   #ordinal 7
   WSACreateEvent
   WSACloseEvent
-  #ordinal 116
-  #ordinal 18
-  #ordinal 17
-  #ordinal 2
   WSASetEvent
   WSARecv
   WSARecvFrom
@@ -595,4 +589,16 @@ Imports: 17 DLLs, 545 functions
   WSAGetOverlappedResult
   #ordinal 5
   WSAIoctl
-  #ordinal 111
+  #ordinal 4
+  #ordinal 3
+  #ordinal 151
+  #ordinal 14
+  #ordinal 8
+  #ordinal 9
+  #ordinal 115
+  #ordinal 52
+  #ordinal 116
+  #ordinal 18
+  #ordinal 17
+  #ordinal 1
+  #ordinal 10
