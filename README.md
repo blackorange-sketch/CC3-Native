@@ -4,32 +4,38 @@ Native Android port of **Command & Conquer 3: Tiberium Wars** via static recompi
 
 Sister project of [RA3-Native](https://github.com/blackorange-sketch/RA3-Native). Both games run on the SAGE engine family, so the recompilation pipeline, Win32/D3D9 compatibility layer and touch scheme are reused from RA3-Native, but CC3 is built and released as a separate game.
 
-> **No game files are included.** You need your own legal copy of C&C 3: Tiberium Wars (patch 1.09 recommended). The launcher copies the required files from your install on first run.
+> **No game files are included.** You need your own legal copy of C&C 3: Tiberium Wars — the **Steam** release (the retail disc build is SecuROM-protected and cannot be recompiled).
 
 ## Status
 
-🚧 Early stage — binary analysis.
+🚧 Bring-up. Runtime, recompiler and launcher come from RA3-Native; CC3 specifics live in `runtime/game_build.h` and `runtime/cc3_imports.cpp`.
 
 | Stage | Status |
 |---|---|
-| Repo skeleton, CI | ✅ |
-| `cnc3game.dat` / `.exe` import analysis | ⏳ |
-| Recompilation of the game binary | ⬜ |
-| Win32 / D3D9 layer (from RA3-Native) | ⬜ |
-| Audio, video (VP6/Bink), input | ⬜ |
-| Touch controls | ⬜ |
+| Binary analysis (Steam `cnc3game.dat`, no SecuROM) | ✅ |
+| Runtime, recompiler, launcher, CI from RA3-Native | ✅ |
+| All 557 imports registered (`tools/coverage.py`) | ✅ |
+| First CI build of the APK | ⏳ |
+| Game reaches D3D init / first frames | ⬜ |
+| DirectInput8 (stub now) | ⬜ |
+| GDI text rendering (stub now: no menu text) | ⬜ |
+| Touch controls tuned for CC3 | ⬜ |
 | First playable build | ⬜ |
 
 ## Layout
 
 ```
-launcher/   Android app (Kotlin): file import, settings, game start
-runtime/    Win32 / D3D9 / audio compatibility layer (C/C++), from RA3-Native
-recomp/     Static recompiler config and generated code for the CC3 binary
-tools/      Analysis scripts (PE imports, game file inventory)
-docs/       Roadmap, notes on the CC3 binary and SAGE differences
-assets/     Launcher UI assets (no game data)
+android/    Android app: launcher (Java) and native glue (android_main.cpp)
+runtime/    Win32 / D3D9 / audio layer the recompiled game runs on
+tools/      analyze + lift_pe (static recompiler), pe_imports.py, coverage.py
+tests/      lifter tests (from RA3-Native)
+docs/       binary notes, import gap, roadmap
 ```
+
+## Game folder
+
+Point the launcher at the CC3 folder (it finds `RetailExe/1.9/cnc3game.dat` by itself). The language list comes from
+the `CNC3_<language>_1.9.SkuDef` files in the game root.
 
 ## Touch controls (planned, same as RA3-Native)
 
@@ -46,7 +52,8 @@ CI builds on GitHub Actions. The game binary is never stored in this repo: CI pu
 ## Analysing your binary locally
 
 ```
-python3 tools/pe_imports.py path/to/cnc3game.dat > docs/imports.txt
+python3 tools/pe_imports.py path/to/cnc3game.dat --json > imports.json
+python3 tools/coverage.py imports.json runtime
 ```
 
 ## License

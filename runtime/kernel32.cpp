@@ -1,0 +1,1141 @@
+#include "game_build.h"
+#include <cmath>
+// KERNEL32 replacement: threads, synchronization, files, memory, time, misc.
+#include <atomic>
+#include <condition_variable>
+#include <dirent.h>
+#include <fcntl.h>
+#include <map>
+#include <mutex>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+#include "fastlock.h"
+#include "rt.h"
+
+#define K "KERNEL32.dll"
+using namespace rt;
+void profThread(uint32_t guestTid);   // prof.cpp
+
+namespace rt
+{
+TlsInfo tls;
+}
+
+namespace
+{
+enum Kind { KFile = 1, KThread, KEvent, KMutex, KSem, KFind, KProc };
+
+thread_local ThreadCtx tctx;
+std::atomic<uint32_t> nextTid{0x1000};
+std::atomic<uint32_t> bumpThread{rt::ThreadBase};
+uint32_t pebAddr;
+std::map<uint32_t, std::pair<uint32_t, uint32_t>> gWaiting;
+std::map<uint32_t, uint32_t> gWaitEsp, gWaitTop;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
+std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0}, gReadUs{0};
+std::mutex waitMu;               // one lock for all waitable objects
+// Each blocked thread waits on its own condition variable and lists the objects it waits for: a SetEvent wakes only
+// the threads waiting for that object. (One shared condvar + notify_all woke every waiting thread on every
+// SetEvent: the game's five job workers each burned a few % of a core re-checking and going back to sleep.)
+struct Waiter { std::condition_variable cv; const void* const* objs; int n; };
+std::vector<Waiter*> gWaitList;   // guarded by waitMu
+struct WaitStat { uint64_t n = 0, ms = 0, timeouts = 0; };
+WaitStat gWaitStats[64];          // WaitForSingleObject per guest thread (guarded by waitMu), for the thread monitor
+int gWaiters = 0; // threads blocked (guarded by waitMu)
+inline void wakeWaiters(const void* obj)
+{
+	for (Waiter* w : gWaitList)
+		for (int i = 0; i < w->n; i++)
+			if (w->objs[i] == obj) { w->cv.notify_one(); break; }
+}
+// blocks until pred() or the timeout (0xffffffff: none); caller holds waitMu. Returns pred()'s last result.
+template <class P> bool waitOn(std::unique_lock<std::mutex>& l, const void* const* objs, int n, uint32_t ms, P pred)
+{
+	Waiter me;
+	me.objs = objs; me.n = n;
+	gWaitList.push_back(&me);
+	gWaiters++;
+	bool r;
+	if (ms == 0xffffffffu) { me.cv.wait(l, pred); r = true; }
+	else r = me.cv.wait_for(l, std::chrono::milliseconds(ms), pred);
+	gWaiters--;
+	gWaitList.erase(std::find(gWaitList.begin(), gWaitList.end(), &me));
+	return r;
+}
+
+uint32_t bump(uint32_t size)
+{
+	size = (size + 0xffff) & ~0xffffu;
+	uint32_t a = bumpThread.fetch_add(size);
+	if (a + size > rt::ThreadEnd) fatal("out of thread address space");
+	guest::commit(a, size);
+	return a;
+}
+
+struct Waitable
+{
+	Kind kind;
+	bool signaled = false, manual = false;
+	int count = 0, maxCount = 1;   // semaphore
+	uint32_t owner = 0, depth = 0; // mutex
+	bool done = false;
+	uint32_t sets = 0, createdBy = 0;
+};
+std::atomic<bool> dummy;
+
+struct ThreadObj : Waitable
+{
+	std::thread th;
+	uint32_t exitCode = 259;
+	uint32_t tid = 0;
+	uint32_t fn = 0, arg = 0;
+	bool started = false, suspended = false;
+};
+
+struct FileObj { int fd; std::string path; bool dir = false; };
+struct FindObj { std::vector<std::string> names; size_t pos = 0; std::string dirHost; };
+
+uint32_t lastErrorAddr() { return thisThread().teb + 0x34; }
+
+bool waitReady(Waitable* w, uint32_t tid)
+{
+	switch (w->kind)
+	{
+	case KMutex: if (w->owner == 0 || w->owner == tid) { w->owner = tid; w->depth++; return true; } return false;
+	case KSem: if (w->count > 0) { w->count--; return true; } return false;
+	default:
+		if (w->signaled) { if (!w->manual) w->signaled = false; return true; }
+		return false;
+	}
+}
+
+Waitable* asWaitable(uint32_t h)
+{
+	for (int k : {KThread, KEvent, KMutex, KSem})
+		if (void* p = getHandle(h, k)) return static_cast<Waitable*>(p);
+	return nullptr;
+}
+
+// ---- critical sections: the guest struct stores an index into a host mutex table
+using CsLock = rt::FastRecLock;   // guest critical sections (fastlock.h)
+// DeleteCriticalSection returns the slot for reuse: the game creates and deletes sections all the time (one run
+// ran out of the 65536 slots three seconds after start)
+constexpr uint32_t kCsMax = 1u << 18;
+CsLock* csTable[kCsMax];
+std::atomic<uint32_t> csCount{1};
+std::mutex csInitMu;
+std::vector<uint32_t> csFree;
+CsLock* csGet(uint32_t cs)
+{
+	uint32_t idx = guest::load<uint32_t>(cs);
+	if (idx == 0 || idx >= kCsMax || !csTable[idx])
+	{
+		std::lock_guard<std::mutex> l(csInitMu);
+		idx = guest::load<uint32_t>(cs);
+		if (idx == 0 || idx >= kCsMax || !csTable[idx])
+		{
+			if (!csFree.empty()) { idx = csFree.back(); csFree.pop_back(); }
+			else
+			{
+				idx = csCount++;
+				if (idx >= kCsMax) fatal("critical section table full");
+				csTable[idx] = new CsLock;
+				if ((idx & 0x3fff) == 0) log("kernel32: %u critical sections in use", idx);
+			}
+			guest::store<uint32_t>(cs, idx);
+		}
+	}
+	return csTable[idx];
+}
+void csDelete(uint32_t cs)
+{
+	std::lock_guard<std::mutex> l(csInitMu);
+	uint32_t idx = guest::load<uint32_t>(cs);
+	if (idx == 0 || idx >= kCsMax || !csTable[idx]) return;
+	guest::store<uint32_t>(cs, 0);
+	// a section still held by some thread is not handed out again
+	if (csTable[idx]->st.load(std::memory_order_acquire) != 0) return;
+	csFree.push_back(idx);
+}
+
+// ---- TLS slots (TlsAlloc)
+std::mutex tlsMu;
+bool tlsUsed[64];
+
+void threadMain(ThreadObj* t)
+{
+	CPU cpu;
+	uint32_t low, top = newGuestStack(low);
+	tctx.cpu = &cpu;
+	tctx.tid = t->tid;
+	{
+		char nm[16]; snprintf(nm, sizeof nm, "g%u-%06x", t->tid, t->fn & 0xffffff);   // shows in the thread CPU monitor
+		pthread_setname_np(pthread_self(), nm);
+		::profThread(t->tid);
+	}
+	tctx.stackTop = top;
+	tctx.teb = makeTeb(low, top, t->tid);
+	traceRegister(t->tid);
+	cpu.fsbase = tctx.teb;
+	cpu.r[ESP] = top - 16;
+	if (t->fn == gb::ThreadWrap1 || t->fn == gb::ThreadWrap2) log("thread %u starts: wrapper %08x real fn %08x arg %08x", t->tid, t->fn, guest::load<uint32_t>(t->arg + 0x10), guest::load<uint32_t>(t->arg + 0x14));
+	uint32_t r = callGuestRet(&cpu, t->fn, {t->arg}, 4);
+	std::lock_guard<std::mutex> l(waitMu);
+	t->exitCode = r;
+	t->signaled = true;
+	t->done = true;
+	wakeWaiters(t);
+}
+
+std::string winTimeBase;
+}
+
+namespace rt
+{
+ThreadCtx& thisThread() { return tctx; }
+void setLastError(uint32_t e) { if (tctx.teb) guest::store<uint32_t>(tctx.teb + 0x34, e); }
+
+uint32_t newGuestStack(uint32_t& low)
+{
+	uint32_t a = bump(StackSize + 0x10000);   // TEB + stack share one block
+	low = a + 0x10000;
+	return a + 0x10000 + StackSize;
+}
+
+uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid)
+{
+	// TEB at the start of the block that precedes the stack (newGuestStack leaves 64 KiB below it)
+	uint32_t teb = stackLow - 0x10000;
+	memset(guest::host(teb), 0, 0x3000);
+	if (!pebAddr)
+	{
+		pebAddr = bump(0x10000);
+		guest::store<uint32_t>(pebAddr + 8, imageBase);
+		guest::store<uint32_t>(pebAddr + 0xa4, 5);    // OSMajorVersion
+		guest::store<uint32_t>(pebAddr + 0xa8, 1);    // OSMinorVersion (XP/7-ish: 6.1 below)
+		guest::store<uint32_t>(pebAddr + 0xa4, 6);
+	}
+	guest::store<uint32_t>(teb + 0x00, 0xffffffff);   // SEH chain end
+	guest::store<uint32_t>(teb + 0x04, stackHigh);
+	guest::store<uint32_t>(teb + 0x08, stackLow);
+	guest::store<uint32_t>(teb + 0x18, teb);
+	guest::store<uint32_t>(teb + 0x20, getpid());
+	guest::store<uint32_t>(teb + 0x24, tid);
+	guest::store<uint32_t>(teb + 0x30, pebAddr);
+	// implicit TLS: pointer array at +0x1000 (fs:[0x2c]); slot [tls.index] -> per-thread copy of the template
+	uint32_t arr = teb + 0x1000;
+	guest::store<uint32_t>(teb + 0x2c, arr);
+	if (tls.end > tls.start)
+	{
+		uint32_t sz = tls.end - tls.start + tls.zeroFill;
+		uint32_t blk = gmalloc(sz + 16);
+		memset(guest::host(blk), 0, sz);
+		memcpy(guest::host(blk), guest::host(tls.start), tls.end - tls.start);
+		guest::store<uint32_t>(arr + 4 * tls.index, blk);
+	}
+	return teb;
+}
+
+uint32_t spawnMainThread(CPU* c)
+{
+	uint32_t low, top = newGuestStack(low);
+	tctx.cpu = c;
+	tctx.tid = nextTid++;
+	pthread_setname_np(pthread_self(), "g4096-main");
+	::profThread(tctx.tid);
+	tctx.stackTop = top;
+	tctx.teb = makeTeb(low, top, tctx.tid);
+	traceRegister(tctx.tid);
+	c->fsbase = tctx.teb;
+	c->r[ESP] = top - 16;
+	return top;
+}
+}
+
+// ================= threads & sync
+IMP_STD(K, CreateThread, 6)
+{
+	auto* t = new ThreadObj;
+	t->kind = KThread;
+	t->manual = true;
+	t->tid = nextTid++;
+	t->fn = ARG(2);
+	t->arg = ARG(3);
+	t->suspended = (ARG(4) & 4) != 0;
+	uint32_t h = newHandle(t, KThread);
+	log("CreateThread tid %u fn %08x arg %08x flags %x by t%u", t->tid, t->fn, t->arg, ARG(4), thisThread().tid);
+	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
+	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
+	SET(h);
+}
+IMP_ID("MSVCR80.dll", "_beginthreadex", beginthreadex, 0)
+{
+	auto* t = new ThreadObj;
+	t->kind = KThread;
+	t->manual = true;
+	t->tid = nextTid++;
+	t->fn = ARG(2);
+	t->arg = ARG(3);
+	t->suspended = (ARG(4) & 4) != 0;
+	uint32_t h = newHandle(t, KThread);
+	log("beginthreadex tid %u fn %08x arg %08x flags %x by t%u", t->tid, t->fn, t->arg, ARG(4), thisThread().tid);
+	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
+	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
+	SET(h);
+}
+IMP_ID("MSVCR80.dll", "_endthreadex", endthreadex, 0) { fatal("_endthreadex called (thread exit via unwinding not implemented)"); }
+IMP_STD(K, ResumeThread, 1)
+{
+	auto* t = (ThreadObj*)getHandle(ARG(0), KThread);
+	if (t && t->suspended && !t->started) { t->suspended = false; t->started = true; spawnHostThread([t] { threadMain(t); }); SET(1); }
+	else SET(0);
+}
+IMP_STD(K, SuspendThread, 1) { SET(0); }
+IMP_STD(K, TerminateThread, 2) { SET(1); }
+IMP_STD(K, GetExitCodeThread, 2) { auto* t = (ThreadObj*)getHandle(ARG(0), KThread); if (t) guest::store<uint32_t>(ARG(1), t->done ? t->exitCode : 259); SET(t ? 1 : 0); }
+IMP_STD(K, GetCurrentThreadId, 0) { SET(thisThread().tid); }
+IMP_STD(K, GetCurrentProcessId, 0) { SET(getpid()); }
+IMP_STD(K, GetCurrentThread, 0) { SET(0xfffffffe); }
+IMP_STD(K, GetCurrentProcess, 0) { SET(0xffffffff); }
+IMP_STD(K, SetThreadPriority, 2) { SET(1); }
+IMP_STD(K, GetThreadPriority, 1) { SET(0); }
+IMP_STD(K, SetPriorityClass, 2) { SET(1); }
+IMP_STD(K, GetPriorityClass, 1) { SET(0x20); }
+IMP_STD(K, SetThreadIdealProcessor, 2) { SET(0); }
+IMP_STD(K, SetProcessAffinityMask, 2) { SET(1); }
+IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); guest::store<uint32_t>(ARG(2), 0xff); SET(1); }
+// Temporary diagnostics for the frame limiter: who makes the main thread wait, and for how long.
+// 60 fps experiment (/sdcard/ra3_fps60): the game's frame limiter (0x6297e0..0x629877, GameEngine update) waits
+// until 1000 / (15 * k) ms have passed, k = render frames per logic frame (logic runs at 15 Hz). It only ever
+// lowers k when frames are slow and never raises it above the start value, so when the limiter is actually
+// waiting (spare time), step k up towards cap / 15.
+namespace rt { bool gFps60 = false, gFps60b = false; }
+using rt::gFps60b;
+using rt::gFps60;
+static std::atomic<uint64_t> gLimWait{0}, gLimWaitTotal{0}, gLimCpu{0};
+static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
+namespace rt { uint64_t limiterCpuUs() { return gLimCpu.exchange(0); } uint64_t limiterWaitUs() { return gLimWait.exchange(0); } uint64_t limiterWaitTotalUs() { return gLimWaitTotal.load(); } }
+static void limiterHeadroom(CPU* c)
+{
+	if (!gb::LimiterRet || guest::load<uint32_t>(c->r[ESP] + 12) != gb::LimiterRet) return;
+	{
+		// time spent in the limiter's wait loop: spans between consecutive calls belong to one wait
+		static uint64_t prev = 0, prevCpu = 0;
+		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+		uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+		if (prev && t - prev < 3000) { gLimWait += t - prev; gLimWaitTotal += t - prev; gLimCpu += cpu - prevCpu; }
+		prev = t; prevCpu = cpu;
+	}
+	uint32_t obj = c->r[EDI];
+	if (obj > 0x400000 && obj < 0x30000000) gLimObj = obj;
+}
+// Called once per presented frame. In 60 fps mode the game expects cap / 15 render frames per logic frame
+// everywhere (interpolation, construction animation, terrain updates), but its limiter drops that number when a
+// frame is slow. Keep it at cap / 15: a slow frame then just runs the game a little slower instead.
+namespace rt
+{
+void fpsPinTick()
+{
+	if (!(gFps60 || gFps60b) || !gLimObj) return;
+	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
+	if (noPin) return;
+	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
+	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(gb::FpsCap) / std::max(1u, guest::load<uint32_t>(gb::LogicHz));
+
+	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
+	if (k == want || k == 0 || k > 16) return;
+	static int n = 0;
+	if (n++ < 20 && !gFps60b) log("fps60: game lowered render frames per logic frame to %u, restored %u", k, want);
+	guest::store<uint32_t>(gLimObj + 0x17c, want);
+}
+}
+static void noteWait(CPU* c, const char* what, uint32_t ms)
+{
+	if (thisThread().tid != 4096 || !verbose()) return;
+	static std::mutex m; static std::map<std::pair<uint32_t, const char*>, std::pair<uint32_t, uint64_t>> h; static uint32_t total = 0; static int dumps = 0;
+	std::lock_guard<std::mutex> l(m);
+	auto& e = h[{guest::load<uint32_t>(c->r[ESP]), what}];
+	e.first++; e.second += ms;
+	++total;
+	static auto lastDump = std::chrono::steady_clock::now();
+	if (dumps < 14 && std::chrono::steady_clock::now() - lastDump > std::chrono::seconds(25))
+	{
+		lastDump = std::chrono::steady_clock::now();
+		dumps++;
+		std::vector<std::pair<uint64_t, std::string>> v;
+		for (auto& kv : h) { char b[96]; snprintf(b, sizeof b, "%s<%08x n=%u ms=%llu", kv.first.second, kv.first.first, kv.second.first, (unsigned long long)kv.second.second); v.push_back({kv.second.second * 1000 + kv.second.first, b}); }
+		std::sort(v.rbegin(), v.rend());
+		std::string o; for (size_t i = 0; i < v.size() && i < 12; i++) o += " | " + v[i].second;
+		log("waitdiag (main thread, last 25 s):%s", o.c_str());
+		h.clear();
+	}
+}
+IMP_STD(K, Sleep, 1) { noteWait(c, "Sleep", ARG(0)); std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
+IMP_STD(K, SleepEx, 2)
+{
+	uint32_t ms = ARG(0);
+	noteWait(c, "SleepEx", ms);
+	limiterHeadroom(c);
+	// the frame limiter spins on SleepEx(0) + timeGetTime until the frame time is reached: 1 ms naps there save power
+	bool limiter = gb::LimiterRet && guest::load<uint32_t>(c->r[ESP] + 12) == gb::LimiterRet;
+	if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+	else std::this_thread::sleep_for(std::chrono::microseconds(limiter ? 1000 : 100));
+	SET(0);
+}
+
+IMP_STD(K, CreateEventA, 4)
+{
+	auto* w = new Waitable;
+	w->kind = KEvent; w->manual = ARG(1) != 0; w->signaled = ARG(2) != 0;
+	w->createdBy = thisThread().tid;
+	SET(newHandle(w, KEvent));
+}
+IMP_STD(K, OpenEventA, 3) { SET(0); setLastError(2); }
+IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(w); } SET(1); }
+IMP_STD(K, ResetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } SET(1); }
+static void createMutex(CPU* c, int initialOwnerArg)
+{
+	auto* w = new Waitable;
+	w->kind = KMutex;
+	if (ARG(initialOwnerArg)) { w->owner = thisThread().tid; w->depth = 1; }
+	SET(newHandle(w, KMutex));
+}
+IMP_STD(K, CreateMutexA, 3) { createMutex(c, 1); }
+IMP_STD(K, CreateMutexW, 3) { createMutex(c, 1); }
+IMP_STD(K, ReleaseMutex, 1)
+{
+	if (auto* w = (Waitable*)getHandle(ARG(0), KMutex))
+	{
+		std::lock_guard<std::mutex> l(waitMu);
+		if (w->owner == thisThread().tid && --w->depth == 0) { w->owner = 0; wakeWaiters(w); }
+	}
+	SET(1);
+}
+IMP_STD(K, CreateSemaphoreA, 4)
+{
+	auto* w = new Waitable;
+	w->kind = KSem; w->count = (int)ARG(1); w->maxCount = (int)ARG(2);
+	w->createdBy = thisThread().tid;
+	SET(newHandle(w, KSem));
+}
+IMP_STD(K, ReleaseSemaphore, 3)
+{
+	auto* w = (Waitable*)getHandle(ARG(0), KSem);
+	if (!w) { SET(0); return; }
+	std::lock_guard<std::mutex> l(waitMu);
+	if (ARG(2)) guest::store<int32_t>(ARG(2), w->count);
+	w->count += (int)ARG(1);
+	w->sets++;
+	wakeWaiters(w);
+	SET(1);
+}
+IMP_STD(K, WaitForSingleObject, 2)
+{
+	Waitable* w = asWaitable(ARG(0));
+	if (!w) { SET(0xffffffff); return; }
+	uint32_t ms = ARG(1), tid = thisThread().tid;
+	if (ms != 0xffffffffu && ms != 0) noteWait(c, "WaitForSingleObject", ms);
+	std::unique_lock<std::mutex> l(waitMu);
+	gWaitCalls++;
+	gWaiting[tid] = {ARG(0), ms};
+	gWaitEsp[tid] = c->r[ESP];
+	gWaitTop[tid] = thisThread().stackTop;
+	const void* obj = w;
+	// The game's job workers poll their queue with 1 ms timeouts (~900 wake-ups per second each, a few % of a core
+	// apiece). Work handed to them is signalled and wakes them at once; only the polling interval is stretched.
+	uint32_t wms = ms;
+	if (wms > 0 && wms < 4 && tid != 0x1000) wms = 4;
+	bool r = waitOn(l, &obj, 1, wms, [&] { return waitReady(w, tid); });
+	gWaiting.erase(tid);
+	{
+		WaitStat& ws = gWaitStats[(tid - 0x1000) & 63];
+		ws.n++; if (ms != 0xffffffffu) ws.ms += ms; if (!r) ws.timeouts++;
+	}
+	SET(r ? 0 : 0x102);
+}
+void dumpWaiters()
+{
+	std::lock_guard<std::mutex> l(waitMu);
+	std::string s;
+	for (auto& kv : gWaiting)
+	{
+		char b[160];
+		Waitable* w = asWaitable(kv.second.first);
+		snprintf(b, sizeof b, " [t%u h%x ms%u kind %d sig %d cnt %d sets %u by t%u]", kv.first, kv.second.first, kv.second.second, w ? (int)w->kind : -1, w ? (int)w->signaled : -1, w ? w->count : -1, w ? w->sets : 0, w ? w->createdBy : 0);
+		s += b;
+		uint32_t esp = gWaitEsp[kv.first], top = gWaitTop[kv.first];
+		std::string st;
+		int found = 0;
+		for (uint32_t k = 0; k < 400 && found < 14 && top && esp + 4 * k + 4 <= top; k++)
+		{
+			uint32_t v = guest::load<uint32_t>(esp + 4 * k);
+			if (v >= 0x401000 && v < 0xbc0000) { char q[16]; snprintf(q, sizeof q, " %x", v); st += q; found++; }
+		}
+		s += " stack:" + st + "\n";
+	}
+	rt::log("stats: reads %llu (%llu bytes), waits %llu, blocked:%s", (unsigned long long)gReadCalls, (unsigned long long)gReadBytes, (unsigned long long)gWaitCalls, s.c_str());
+}
+IMP_STD(K, DuplicateHandle, 7) { guest::store<uint32_t>(ARG(3), ARG(1)); SET(1); }
+IMP_STD(K, CloseHandle, 1)
+{
+	uint32_t h = ARG(0);
+	if (auto* f = (FileObj*)getHandle(h, KFile)) { if (f->fd >= 0) close(f->fd); delete f; }
+	closeHandle(h);
+	SET(1);
+}
+
+IMP_STD(K, InitializeCriticalSection, 1) { guest::store<uint32_t>(ARG(0), 0); csGet(ARG(0)); }
+IMP_STD(K, InitializeCriticalSectionAndSpinCount, 2) { guest::store<uint32_t>(ARG(0), 0); csGet(ARG(0)); SET(1); }
+IMP_STD(K, DeleteCriticalSection, 1) { csDelete(ARG(0)); }
+IMP_STD(K, EnterCriticalSection, 1) { csGet(ARG(0))->lock(); }
+IMP_STD(K, LeaveCriticalSection, 1) { csGet(ARG(0))->unlock(); }
+IMP_STD(K, TryEnterCriticalSection, 1) { SET(csGet(ARG(0))->try_lock() ? 1 : 0); }
+
+IMP_STD(K, InterlockedIncrement, 1) { SET(__atomic_add_fetch((int32_t*)guest::host(ARG(0)), 1, __ATOMIC_SEQ_CST)); }
+IMP_STD(K, InterlockedDecrement, 1) { SET(__atomic_sub_fetch((int32_t*)guest::host(ARG(0)), 1, __ATOMIC_SEQ_CST)); }
+IMP_STD(K, InterlockedExchange, 2) { SET(__atomic_exchange_n((int32_t*)guest::host(ARG(0)), (int32_t)ARG(1), __ATOMIC_SEQ_CST)); }
+IMP_STD(K, InterlockedExchangeAdd, 2) { SET(__atomic_fetch_add((int32_t*)guest::host(ARG(0)), (int32_t)ARG(1), __ATOMIC_SEQ_CST)); }
+IMP_STD(K, InterlockedCompareExchange, 3)
+{
+	int32_t exp = (int32_t)ARG(2);
+	__atomic_compare_exchange_n((int32_t*)guest::host(ARG(0)), &exp, (int32_t)ARG(1), false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+	SET(exp);
+}
+
+IMP_STD(K, TlsAlloc, 0)
+{
+	std::lock_guard<std::mutex> l(tlsMu);
+	for (uint32_t i = 1; i < 64; i++) if (!tlsUsed[i]) { tlsUsed[i] = true; SET(i + 32); return; }   // 0..31 left for implicit TLS
+	SET(0xffffffff);
+}
+IMP_STD(K, TlsFree, 1) { std::lock_guard<std::mutex> l(tlsMu); if (ARG(0) >= 32 && ARG(0) < 96) tlsUsed[ARG(0) - 32] = false; SET(1); }
+IMP_STD(K, TlsSetValue, 2) { guest::store<uint32_t>(thisThread().teb + 0x1000 + 4 * ARG(0), ARG(1)); SET(1); }
+IMP_STD(K, TlsGetValue, 1) { SET(guest::load<uint32_t>(thisThread().teb + 0x1000 + 4 * ARG(0))); }
+IMP_STD(K, GetLastError, 0) { SET(guest::load<uint32_t>(lastErrorAddr())); }
+IMP_STD(K, SetLastError, 1) { setLastError(ARG(0)); }
+IMP_STD(K, RaiseException, 4) { if (ARG(0) == 0x406d1388) return; fatal("RaiseException(code %08x)", ARG(0)); }
+IMP_STD(K, SetUnhandledExceptionFilter, 1) { SET(0); }
+IMP_STD(K, UnhandledExceptionFilter, 1) { SET(0); }
+IMP_STD(K, IsDebuggerPresent, 0) { SET(0); }
+IMP_STD(K, OutputDebugStringA, 1) { log("[dbg] %s", gstr(ARG(0)).c_str()); }
+IMP_STD(K, SetErrorMode, 1) { SET(0); }
+
+// ================= memory
+IMP_STD(K, VirtualAlloc, 4)
+{
+	uint32_t addr = ARG(0), size = ARG(1), type = ARG(2);
+	if (addr && addr >= VmBase && addr < VmEnd && size && !(type & 0x2000)) { SET(addr); return; }
+	SET(vmAlloc(size));
+}
+IMP_STD(K, VirtualFree, 3) { SET(1); }
+IMP_STD(K, VirtualQuery, 3)
+{
+	uint32_t p = ARG(0), out = ARG(1);
+	memset(guest::host(out), 0, 28);
+	guest::store<uint32_t>(out, p & ~0xfffu);
+	guest::store<uint32_t>(out + 4, p & ~0xfffu);
+	guest::store<uint32_t>(out + 12, 0x1000);   // RegionSize
+	guest::store<uint32_t>(out + 16, 0x1000);   // MEM_COMMIT
+	guest::store<uint32_t>(out + 20, 4);        // PAGE_READWRITE
+	SET(28);
+}
+IMP_STD(K, VirtualProtect, 4) { if (ARG(3)) guest::store<uint32_t>(ARG(3), 4); SET(1); }
+IMP_STD(K, IsBadReadPtr, 2) { SET(ARG(0) == 0 ? 1 : 0); }
+IMP_STD(K, IsBadWritePtr, 2) { SET(ARG(0) == 0 ? 1 : 0); }
+IMP_STD(K, IsBadCodePtr, 1) { SET(ARG(0) == 0 ? 1 : 0); }
+IMP_STD(K, GetProcessHeap, 0) { SET(0x50000); }
+IMP_STD(K, HeapAlloc, 3) { uint32_t p = gmalloc(ARG(2)); if (ARG(1) & 8) memset(guest::host(p), 0, ARG(2)); SET(p); }
+IMP_STD(K, HeapFree, 3) { gfree(ARG(2)); SET(1); }
+IMP_STD(K, HeapReAlloc, 4) { SET(grealloc(ARG(2), ARG(3))); }
+IMP_STD(K, HeapSize, 3) { SET(gsize(ARG(2))); }
+IMP_STD(K, HeapCreate, 3) { SET(0x50000); }
+IMP_STD(K, HeapDestroy, 1) { SET(1); }
+IMP_STD(K, GlobalAlloc, 2) { uint32_t p = gmalloc(ARG(1)); if (ARG(0) & 0x40) memset(guest::host(p), 0, ARG(1)); SET(p); }
+IMP_STD(K, GlobalFree, 1) { gfree(ARG(0)); SET(0); }
+IMP_STD(K, GlobalLock, 1) { SET(ARG(0)); }
+IMP_STD(K, GlobalUnlock, 1) { SET(0); }
+IMP_STD(K, GlobalSize, 1) { SET(gsize(ARG(0))); }
+IMP_STD(K, GlobalReAlloc, 3) { SET(grealloc(ARG(0), ARG(1))); }
+IMP_STD(K, LocalAlloc, 2) { uint32_t p = gmalloc(ARG(1)); if (ARG(0) & 0x40) memset(guest::host(p), 0, ARG(1)); SET(p); }
+IMP_STD(K, LocalFree, 1) { gfree(ARG(0)); SET(0); }
+IMP_STD(K, GlobalMemoryStatus, 1)
+{
+	uint32_t p = ARG(0);
+	guest::store<uint32_t>(p, 32);
+	guest::store<uint32_t>(p + 4, 30);
+	guest::store<uint32_t>(p + 8, 0x7f000000);    // total phys
+	guest::store<uint32_t>(p + 12, 0x60000000);   // avail phys
+	guest::store<uint32_t>(p + 16, 0x7fff0000);
+	guest::store<uint32_t>(p + 20, 0x60000000);
+	guest::store<uint32_t>(p + 24, 0x7fff0000);
+	guest::store<uint32_t>(p + 28, 0x60000000);
+}
+IMP_STD(K, GlobalMemoryStatusEx, 1)
+{
+	uint32_t p = ARG(0);
+	memset(guest::host(p), 0, 64);
+	guest::store<uint32_t>(p, 64);
+	guest::store<uint32_t>(p + 4, 30);
+	guest::store<uint64_t>(p + 8, 0x7f000000ull);
+	guest::store<uint64_t>(p + 16, 0x60000000ull);
+	guest::store<uint64_t>(p + 24, 0x7fff0000ull);
+	guest::store<uint64_t>(p + 32, 0x60000000ull);
+	guest::store<uint64_t>(p + 40, 0x7fff0000ull);
+	guest::store<uint64_t>(p + 48, 0x60000000ull);
+	SET(1);
+}
+IMP_STD(K, ReadProcessMemory, 5) { SET(0); }
+
+// ================= time
+static uint64_t winFileTime()
+{
+	timespec t; clock_gettime(CLOCK_REALTIME, &t);
+	return ((uint64_t)t.tv_sec + 11644473600ull) * 10000000ull + t.tv_nsec / 100;
+}
+// ---- background pause: the game thread is held in Present while the app is in the background; the game's clocks
+// skip the paused time so that it does not try to catch up afterwards
+namespace
+{
+std::mutex gBgMu;
+std::condition_variable gBgCv;
+bool gBg = false;
+std::atomic<uint64_t> gPausedNs{0};
+uint64_t gameNs() { return rdtsc_host() - gPausedNs.load(); }
+}
+namespace rt
+{
+void setBackground(bool bg)
+{
+	{
+		std::lock_guard<std::mutex> l(gBgMu);
+		if (gBg == bg) return;
+		gBg = bg;
+	}
+	log("app %s", bg ? "in the background: game paused" : "back in the foreground: game resumed");
+	audioPause(bg);
+	gBgCv.notify_all();
+}
+bool background() { std::lock_guard<std::mutex> l(gBgMu); return gBg; }
+uint64_t pausedNs() { return gPausedNs.load(); }
+void waitWhileBackground()
+{
+	std::unique_lock<std::mutex> l(gBgMu);
+	if (!gBg) return;
+	uint64_t t0 = rdtsc_host();
+	gBgCv.wait(l, [] { return !gBg; });
+	gPausedNs += rdtsc_host() - t0;
+}
+}
+IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); SET((uint32_t)(gameNs() / 1000000)); }
+IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); SET((uint32_t)(gameNs() / 1000000)); }
+IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { static int n = 0; if (n++ < 4) log("timeBeginPeriod(%u)", ARG(0)); SET(0); }
+IMP_ID("WINMM.dll", "timeEndPeriod", timeEndPeriod, 4) { SET(0); }
+IMP_STD(K, QueryPerformanceFrequency, 1) { guest::store<uint64_t>(ARG(0), 1000000000ull); SET(1); }
+IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), gameNs()); SET(1); }
+IMP_STD(K, GetSystemTimeAsFileTime, 1) { guest::store<uint64_t>(ARG(0), winFileTime()); }
+IMP_STD(K, GetLocalTime, 1)
+{
+	time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm);
+	uint16_t v[8] = {(uint16_t)(tm.tm_year + 1900), (uint16_t)(tm.tm_mon + 1), (uint16_t)tm.tm_wday, (uint16_t)tm.tm_mday, (uint16_t)tm.tm_hour, (uint16_t)tm.tm_min, (uint16_t)tm.tm_sec, 0};
+	for (int i = 0; i < 8; i++) guest::store<uint16_t>(ARG(0) + 2 * i, v[i]);
+}
+IMP_STD(K, GetTimeZoneInformation, 1) { memset(guest::host(ARG(0)), 0, 172); SET(0); }
+IMP_STD(K, GetTimeFormatA, 6) { SET(putStr(ARG(4), "00:00:00") + 1); }
+IMP_STD(K, FileTimeToDosDateTime, 3) { guest::store<uint16_t>(ARG(1), 0x21); guest::store<uint16_t>(ARG(2), 0); SET(1); }
+IMP_STD(K, DosDateTimeToFileTime, 3) { guest::store<uint64_t>(ARG(2), winFileTime()); SET(1); }
+
+// ================= process / module / system
+IMP_STD(K, GetVersionExA, 1)
+{
+	uint32_t p = ARG(0);
+	guest::store<uint32_t>(p + 4, 6);
+	guest::store<uint32_t>(p + 8, 1);
+	guest::store<uint32_t>(p + 12, 7601);
+	guest::store<uint32_t>(p + 16, 2);
+	putStr(p + 20, "Service Pack 1");
+	SET(1);
+}
+IMP_STD(K, GetSystemInfo, 1)
+{
+	uint32_t p = ARG(0);
+	memset(guest::host(p), 0, 36);
+	guest::store<uint32_t>(p + 4, 0x1000);
+	guest::store<uint32_t>(p + 8, 0x10000);
+	guest::store<uint32_t>(p + 12, 0x7ffeffff);
+	guest::store<uint32_t>(p + 20, 4);          // processors
+	guest::store<uint32_t>(p + 24, 586);
+	guest::store<uint32_t>(p + 28, 0x10000);
+}
+IMP_STD(K, GetModuleHandleA, 1) { SET(ARG(0) ? 0x7ff00000 : imageBase); }
+IMP_STD(K, GetModuleFileNameA, 3) { std::string s = gb::kModulePath; uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
+IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16(std::string(gb::kModulePath)); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
+IMP_STD(K, GetCommandLineA, 0) { static uint32_t a = newStr(rt::commandLine()); SET(a); }
+IMP_STD(K, GetCommandLineW, 0) { static uint32_t a = [] { auto s = utf8to16(rt::commandLine()); uint32_t p = gmalloc(2 * s.size() + 2); putWStr(p, s); return p; }(); SET(a); }
+IMP_STD(K, GetStartupInfoA, 1) { memset(guest::host(ARG(0)), 0, 68); guest::store<uint32_t>(ARG(0), 68); }
+IMP_STD(K, GetEnvironmentVariableA, 3) { SET(0); setLastError(203); }
+IMP_STD(K, SetEnvironmentVariableA, 2) { SET(1); }
+IMP_STD(K, GetComputerNameA, 2) { putStr(ARG(0), "ANDROID"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
+IMP_ID("ADVAPI32.dll", "GetUserNameA", GetUserNameA, 8) { putStr(ARG(0), "player"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
+IMP_STD(K, LoadLibraryA, 1) { std::string n = gstr(ARG(0)); log("LoadLibraryA(%s)", n.c_str()); SET(0); setLastError(126); }
+IMP_STD(K, FreeLibrary, 1) { SET(1); }
+IMP_STD(K, GetProcAddress, 2) { SET(0); setLastError(127); }
+IMP_STD(K, GetLogicalDrives, 0) { SET(1 << 2); }
+IMP_STD(K, GetWindowsDirectoryW, 2) { SET(putWStr(ARG(0), u"C:\\Windows")); }
+IMP_STD(K, GetTempPathA, 2) { SET(putStr(ARG(1), "C:\\Temp\\")); }
+IMP_STD(K, GetTempFileNameA, 4) { static int n; SET(putStr(ARG(3), gstr(ARG(0)) + "\\tmp" + std::to_string(++n) + ".tmp")); }
+IMP_STD(K, GetCurrentDirectoryA, 2) { SET(putStr(ARG(1), "C:\\RA3")); }
+IMP_STD(K, SetCurrentDirectoryW, 1) { SET(1); }
+IMP_STD(K, GetLocaleInfoA, 4) { SET(putStr(ARG(2), "1") + 1); }
+IMP_STD(K, GetLocaleInfoW, 4) { SET(putWStr(ARG(2), u"1") + 1); }
+IMP_STD(K, GetACP, 0) { SET(1251); }
+IMP_STD(K, GetOEMCP, 0) { SET(866); }
+IMP_STD(K, GetUserDefaultLCID, 0) { SET(0x419); }
+IMP_STD(K, GetSystemDefaultLCID, 0) { SET(0x419); }
+IMP_STD(K, GetStdHandle, 1) { SET(0x10 + (0xfffffff6u - ARG(0))); }
+IMP_STD(K, FreeConsole, 0) { SET(1); }
+IMP_STD(K, GetNumberOfConsoleInputEvents, 2) { SET(0); }
+IMP_STD(K, ReadConsoleInputA, 4) { SET(0); }
+IMP_STD(K, GetConsoleScreenBufferInfo, 2) { SET(0); }
+IMP_STD(K, GetLargestConsoleWindowSize, 1) { SET(0); }
+IMP_STD(K, SetConsoleScreenBufferSize, 2) { SET(0); }
+IMP_STD(K, WriteConsoleOutputA, 5) { SET(0); }
+IMP_STD(K, SetNamedPipeHandleState, 4) { SET(0); }
+IMP_STD(K, CreateToolhelp32Snapshot, 2) { SET(0xffffffff); }
+IMP_STD(K, Thread32First, 2) { SET(0); }
+IMP_STD(K, Thread32Next, 2) { SET(0); }
+IMP_ID("USER32.dll", "EnumThreadWindows", EnumThreadWindows, 12) { SET(1); }
+static char16_t cp1251ToU(unsigned char ch)
+{
+	static const uint16_t hi[64] = {0x402,0x403,0x201A,0x453,0x201E,0x2026,0x2020,0x2021,0x20AC,0x2030,0x409,0x2039,0x40A,0x40C,0x40B,0x40F,
+		0x452,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,0x98,0x2122,0x459,0x203A,0x45A,0x45C,0x45B,0x45F,
+		0xA0,0x40E,0x45E,0x408,0xA4,0x490,0xA6,0xA7,0x401,0xA9,0x404,0xAB,0xAC,0xAD,0xAE,0x407,
+		0xB0,0xB1,0x406,0x456,0x491,0xB5,0xB6,0xB7,0x451,0x2116,0x454,0xBB,0x458,0x405,0x455,0x457};
+	if (ch < 0x80) return ch;
+	if (ch < 0xc0) return hi[ch - 0x80];
+	return (char16_t)(0x410 + (ch - 0xc0));
+}
+static int mbLogCount = 0;
+IMP_STD(K, MultiByteToWideChar, 6)
+{
+	uint32_t srcLen = ARG(3);
+	std::string s = srcLen == 0xffffffffu ? gstr(ARG(2)) + std::string(1, '\0') : gstrn(ARG(2), srcLen);
+	std::u16string w;
+	if (ARG(0) == 65001) w = utf8to16(s);
+	else if (ARG(0) == 0 || ARG(0) == 1251) for (unsigned char ch : s) w += cp1251ToU(ch);
+	else for (unsigned char ch : s) w += (char16_t)ch;
+	if (mbLogCount < 40) { bool hi = false; for (unsigned char ch : s) if (ch >= 0x80) hi = true; if (hi) { mbLogCount++; log("MultiByteToWideChar cp %u flags %x len %d: %.40s", ARG(0), ARG(1), (int)srcLen, s.c_str()); } }
+	if (srcLen == 0xffffffffu && w.empty()) w = u"\0";
+	if (ARG(5) == 0) { SET(w.size()); return; }
+	if (w.size() > ARG(5)) { setLastError(122); SET(0); return; }
+	memcpy(guest::host(ARG(4)), w.data(), 2 * w.size());
+	SET(w.size());
+}
+IMP_STD(K, WideCharToMultiByte, 8)
+{
+	uint32_t srcLen = ARG(3);
+	std::u16string w = srcLen == 0xffffffffu ? gwstr(ARG(2)) + std::u16string(1, u'\0') : std::u16string((char16_t*)guest::host(ARG(2)), srcLen);
+	std::string s;
+	if (ARG(0) == 65001) s = utf16to8(w);   // w already carries the terminator when the length was -1
+	else for (char16_t ch : w) s += ch < 0x100 ? (char)ch : (ch >= 0x410 && ch <= 0x44f && ARG(0) == 1251 ? (char)(0xc0 + ch - 0x410) : '?');
+	if (ARG(5) == 0) { SET(s.size()); return; }
+	if (s.size() > ARG(5)) { setLastError(122); SET(0); return; }
+	memcpy(guest::host(ARG(4)), s.data(), s.size());
+	SET(s.size());
+}
+
+
+static std::string lowerStr(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
+// Debug aid: dump interesting entries of an EA BIG archive that the game has just opened.
+static void scanBig(int fd, const std::string& name)
+{
+	uint8_t h[16];
+	if (pread(fd, h, 16, 0) != 16 || memcmp(h, "BIG", 3) != 0) { log("big %s: bad header", name.c_str()); return; }
+	auto be = [](const uint8_t* p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; };
+	uint32_t count = be(h + 8), first = be(h + 12);
+	std::vector<uint8_t> toc(first > 16 && first < (64u << 20) ? first - 16 : 0);
+	if (toc.empty() || pread(fd, toc.data(), toc.size(), 16) != (ssize_t)toc.size()) { log("big %s: toc read failed", name.c_str()); return; }
+	size_t pos = 0;
+	uint32_t shown = 0;
+	for (uint32_t i = 0; i < count && pos + 9 <= toc.size(); i++)
+	{
+		uint32_t off = be(&toc[pos]), sz = be(&toc[pos + 4]);
+		const char* n = (const char*)&toc[pos + 8];
+		size_t len = strnlen(n, toc.size() - pos - 8);
+		pos += 8 + len + 1;
+		std::string ln = lowerStr(std::string(n, len));
+		if (ln.find("gpufx") != std::string::npos || ln.find("gpuparticle") != std::string::npos) log("big %s: FX [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
+		static int csfSeen = 0;
+		if (ln.find("gamestrings.csf") != std::string::npos && sz < (32u << 20) && csfSeen++ == 0)
+		{
+			// debug aid: which option labels does the string table actually contain?
+			std::vector<uint8_t> buf(sz);
+			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
+			{
+				if (buf.size() > 5 && buf[1] == 0xfb)
+				{
+					// RefPack-compressed: inflate before searching
+					const uint8_t* d = buf.data(); size_t p = 2, n = (d[0] & 0x80) ? 4 : 3;
+					if (d[0] & 1) p += n;
+					size_t total = 0; for (size_t k = 0; k < n; k++) total = total << 8 | d[p++];
+					std::vector<uint8_t> o; o.reserve(total);
+					while (p < buf.size() && o.size() < total)
+					{
+						uint32_t b0 = d[p++], lit, cnt = 0, dist = 0;
+						if (b0 < 0x80) { uint32_t b1 = d[p++]; lit = b0 & 3; cnt = ((b0 & 0x1c) >> 2) + 3; dist = ((b0 & 0x60) << 3) + b1 + 1; }
+						else if (b0 < 0xc0) { uint32_t b1 = d[p], b2 = d[p + 1]; p += 2; lit = b1 >> 6; cnt = (b0 & 0x3f) + 4; dist = ((b1 & 0x3f) << 8) + b2 + 1; }
+						else if (b0 < 0xe0) { uint32_t b1 = d[p], b2 = d[p + 1], b3 = d[p + 2]; p += 3; lit = b0 & 3; cnt = ((b0 & 0x0c) << 6) + b3 + 5; dist = ((b0 & 0x10) << 12) + (b1 << 8) + b2 + 1; }
+						else if (b0 < 0xfc) { lit = ((b0 & 0x1f) << 2) + 4; }
+						else { lit = b0 & 3; cnt = 0; total = o.size() + lit; }
+						for (uint32_t k = 0; k < lit && p < buf.size(); k++) o.push_back(d[p++]);
+						if (cnt && dist <= o.size()) for (uint32_t k = 0; k < cnt; k++) o.push_back(o[o.size() - dist]);
+					}
+					buf.swap(o);
+				}
+				int found = 0;
+				log("big %s: CSF %s size=%u unpacked=%zu head=%.4s", name.c_str(), ln.c_str(), sz, buf.size(), (const char*)buf.data());
+				for (size_t i = 0; i + 8 < buf.size() && found < 80; i++)
+				{
+					if (strncasecmp((const char*)&buf[i], "Gfx", 3) != 0 && strncasecmp((const char*)&buf[i], "TerrainDet", 10) != 0 && strncasecmp((const char*)&buf[i], "ShadowDet", 9) != 0 && strncasecmp((const char*)&buf[i], "UltraHigh", 9) != 0 && strncasecmp((const char*)&buf[i], "VeryLow", 7) != 0) continue;
+					while (i > 0 && buf[i - 1] >= 0x20 && buf[i - 1] < 0x7f) i--;
+					size_t e = i; while (e < buf.size() && e < i + 64 && buf[e] >= 0x20 && buf[e] < 0x7f) e++;
+					log("   csf label '%s'", std::string((const char*)&buf[i], e - i).c_str());
+					found++; i = e;
+				}
+				log("   csf: %d APT:Gfx* labels", found);
+			}
+		}
+		if (ln.find("optionssettings") != std::string::npos && sz < (8u << 20) && access("/sdcard/ra3_dump", F_OK) == 0)
+		{
+			// debug aid: extract the options-screen UI files so they can be inspected offline
+			std::string base = ln.substr(ln.find_last_of("\\/") + 1);
+			std::vector<uint8_t> buf(sz);
+			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
+				if (FILE* o = fopen(("/sdcard/ra3_dump/" + base).c_str(), "wb")) { fwrite(buf.data(), 1, sz, o); fclose(o); log("big %s: dumped %s (%u bytes)", name.c_str(), base.c_str(), sz); }
+		}
+		if ((ln.find("manifest") != std::string::npos || ln.find(".version") != std::string::npos) && shown++ < 12)
+			log("big %s: [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
+	}
+	log("big %s: %u entries, first data offset %u", name.c_str(), count, first);
+}
+
+// ================= files
+// Intro/cutscene videos are not supported yet (decoder output never reaches a texture): hide them so the game skips them.
+static bool isMovieFile(const std::string& p)
+{
+	std::string l;
+	for (char ch : p) l += ch == '\\' ? '/' : (char)tolower((unsigned char)ch);
+	if (getenv("RA3_PLAY_MOVIES") || access("/sdcard/ra3_play_movies", F_OK) == 0 || rt::config.playMovies) return false;   // launcher setting (or the flag file)
+	return l.find("/movies/") != std::string::npos && (l.size() > 4 && (l.compare(l.size() - 4, 4, ".vp6") == 0 || l.compare(l.size() - 4, 4, ".snd") == 0));
+}
+static FileObj* fileOf(uint32_t h) { return (FileObj*)getHandle(h, KFile); }
+static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32_t share, uint32_t disp)
+{
+	(void)share;
+	{ static int mv = 0; std::string l; for (char ch : winPath) l += ch == '\\' ? '/' : (char)tolower((unsigned char)ch); if (l.find("/movies/") != std::string::npos && mv++ < 30) log("movie open: '%s' (%s)", winPath.c_str(), isMovieFile(winPath) ? "hidden" : "allowed"); }
+	if (isMovieFile(winPath)) { log("open hidden (movie): '%s'", winPath.c_str()); setLastError(2); SET(0xffffffff); return; }
+	std::string hp = hostPath(winPath);
+	int flags = (access & 0x40000000) ? ((access & 0x80000000) ? O_RDWR : O_WRONLY) : O_RDONLY;
+	switch (disp)
+	{
+	case 1: flags |= O_CREAT | O_EXCL; break;
+	case 2: flags |= O_CREAT | O_TRUNC; break;
+	case 3: break;
+	case 4: flags |= O_CREAT; break;
+	case 5: flags |= O_TRUNC; break;
+	}
+	if (flags & O_CREAT)
+	{
+		size_t k = hp.rfind('/');
+		if (k != std::string::npos)
+			for (size_t i = 1; i <= k; i++) if (hp[i] == '/' || i == k) mkdir(hp.substr(0, i).c_str(), 0777);
+	}
+	struct stat st;
+	bool isDir = stat(hp.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+	int fd = isDir ? -1 : open(hp.c_str(), flags, 0666);
+	if (fd < 0 && !isDir) { if (getenv("RA3_RINGDUMP") && winPath.find("audio.manifest") != std::string::npos) traceDump();
+	if (!(flags & O_CREAT)) log("open failed: '%s' -> '%s' (errno %d)", winPath.c_str(), hp.c_str(), errno); setLastError(errno == ENOENT ? 2 : errno == EEXIST ? 80 : 5); SET(0xffffffff); return; }
+	setLastError(disp == 4 && fd >= 0 && st.st_size > 0 ? 183 : 0);
+	{
+		static int opened = 0;
+		if (opened++ < 300) log("open ok: '%s' -> %s%s acc=%08x disp=%u fd=%d", winPath.c_str(), hp.c_str(), isDir ? " (dir)" : "", access, disp, fd);
+	}
+	if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR)) && hp.size() > 7 && lowerStr(hp.substr(hp.size() - 7)) == ".skudef")
+	{
+		char buf[900];
+		ssize_t n = pread(fd, buf, sizeof buf - 1, 0);
+		std::string t;
+		for (ssize_t i = 0; i < n; i++) t += buf[i] == '\n' ? std::string(" | ") : buf[i] == '\r' ? std::string() : std::string(1, buf[i]);
+		log("skudef %s: %s", hp.substr(hp.rfind('/') + 1).c_str(), t.c_str());
+	}
+	if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR)) && hp.size() > 4 && lowerStr(hp.substr(hp.size() - 4)) == ".big")
+	{
+		static int scanned = 0;
+		if (scanned++ < 60) scanBig(fd, hp.substr(hp.rfind('/') + 1));
+	}
+	auto* f = new FileObj{fd, hp, isDir};
+	SET(newHandle(f, KFile));
+}
+IMP_STD(K, CreateFileA, 7) { openFile(c, gstr(ARG(0)), ARG(1), ARG(2), ARG(4)); }
+IMP_STD(K, CreateFileW, 7) { openFile(c, utf16to8(gwstr(ARG(0))), ARG(1), ARG(2), ARG(4)); }
+IMP_STD(K, ReadFile, 5)
+{
+	FileObj* f = fileOf(ARG(0));
+	if (!f || f->fd < 0) { SET(0); return; }
+	auto rt0 = std::chrono::steady_clock::now();
+	ssize_t n = read(f->fd, guest::host(ARG(1)), ARG(2));
+	gReadUs += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - rt0).count();
+	if (verbose())
+	{
+		static int reads = 0;
+		if (reads++ < 150 || n < 0 || (uint32_t)n != ARG(2))
+			if (reads < 600) log("ReadFile fd=%d want=%u got=%d ovl=%08x errno=%d", f->fd, ARG(2), (int)n, ARG(4), n < 0 ? errno : 0);
+	}
+	if (n < 0) { SET(0); return; }
+	gReadCalls++; gReadBytes += (uint64_t)n;
+	if (verbose())
+	{
+		static std::mutex m; static std::map<std::string, std::pair<uint64_t, uint64_t>> per; static uint64_t total = 0;
+		std::lock_guard<std::mutex> g(m);
+		auto& e = per[f->path]; e.first++; e.second += (uint64_t)n;
+		if (++total % 3000 == 0)
+		{
+			std::string o;
+			for (auto& kv : per) { size_t k = kv.first.rfind('/'); o += " " + (k == std::string::npos ? kv.first : kv.first.substr(k + 1)) + "=" + std::to_string(kv.second.first) + "/" + std::to_string(kv.second.second >> 10) + "K"; }
+			log("io: reads=%llu%s", (unsigned long long)total, o.c_str());
+		}
+	}
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), (uint32_t)n);
+	SET(1);
+}
+IMP_STD(K, WriteFile, 5)
+{
+	uint32_t h = ARG(0);
+	if (h >= 0x10 && h <= 0x12) { fwrite(guest::host(ARG(1)), 1, ARG(2), h == 0x11 ? stdout : stderr); if (ARG(3)) guest::store<uint32_t>(ARG(3), ARG(2)); SET(1); return; }
+	FileObj* f = fileOf(h);
+	if (!f || f->fd < 0) { SET(0); return; }
+	ssize_t n = write(f->fd, guest::host(ARG(1)), ARG(2));
+	if (n < 0) { SET(0); return; }
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), (uint32_t)n);
+	SET(1);
+}
+IMP_STD(K, SetFilePointer, 4)
+{
+	FileObj* f = fileOf(ARG(0));
+	if (!f) { SET(0xffffffff); return; }
+	int64_t off = (int32_t)ARG(1);
+	if (ARG(2)) off |= (int64_t)(int32_t)guest::load<uint32_t>(ARG(2)) << 32;
+	off_t r = lseek(f->fd, off, ARG(3) == 0 ? SEEK_SET : ARG(3) == 1 ? SEEK_CUR : SEEK_END);
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), (uint32_t)((uint64_t)r >> 32));
+	SET((uint32_t)r);
+}
+IMP_STD(K, SetFilePointerEx, 5)
+{
+	FileObj* f = fileOf(ARG(0));
+	if (!f) { SET(0); return; }
+	int64_t off = (int64_t)(ARG(1) | (uint64_t)ARG(2) << 32);
+	off_t r = lseek(f->fd, off, ARG(4) == 0 ? SEEK_SET : ARG(4) == 1 ? SEEK_CUR : SEEK_END);
+	if (ARG(3)) guest::store<int64_t>(ARG(3), r);
+	SET(1);
+}
+IMP_STD(K, GetFileSize, 2)
+{
+	FileObj* f = fileOf(ARG(0));
+	struct stat st;
+	if (!f || fstat(f->fd, &st)) { SET(0xffffffff); return; }
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), (uint32_t)((uint64_t)st.st_size >> 32));
+	SET((uint32_t)st.st_size);
+}
+IMP_STD(K, GetFileSizeEx, 2) { FileObj* f = fileOf(ARG(0)); struct stat st; if (!f || fstat(f->fd, &st)) { SET(0); return; } guest::store<int64_t>(ARG(1), st.st_size); SET(1); }
+IMP_STD(K, SetEndOfFile, 1) { FileObj* f = fileOf(ARG(0)); SET(f && ftruncate(f->fd, lseek(f->fd, 0, SEEK_CUR)) == 0); }
+IMP_STD(K, FlushFileBuffers, 1) { SET(1); }
+IMP_STD(K, SetFileTime, 4) { SET(1); }
+static uint64_t toFileTime(time_t t) { return ((uint64_t)t + 11644473600ull) * 10000000ull; }
+IMP_STD(K, GetFileInformationByHandle, 2)
+{
+	FileObj* f = fileOf(ARG(0));
+	struct stat st;
+	if (!f || fstat(f->fd, &st)) { SET(0); return; }
+	uint32_t p = ARG(1);
+	memset(guest::host(p), 0, 52);
+	guest::store<uint32_t>(p, 0x80);
+	guest::store<uint64_t>(p + 4, toFileTime(st.st_ctime));
+	guest::store<uint64_t>(p + 12, toFileTime(st.st_atime));
+	guest::store<uint64_t>(p + 20, toFileTime(st.st_mtime));
+	guest::store<uint32_t>(p + 36, (uint32_t)((uint64_t)st.st_size >> 32));
+	guest::store<uint32_t>(p + 40, (uint32_t)st.st_size);
+	guest::store<uint32_t>(p + 44, 1);
+	SET(1);
+}
+IMP_STD(K, DeleteFileA, 1) { SET(unlink(hostPath(gstr(ARG(0))).c_str()) == 0); }
+IMP_STD(K, DeleteFileW, 1) { SET(unlink(hostPath(utf16to8(gwstr(ARG(0)))).c_str()) == 0); }
+IMP_STD(K, RemoveDirectoryA, 1) { SET(rmdir(hostPath(gstr(ARG(0))).c_str()) == 0); }
+IMP_STD(K, RemoveDirectoryW, 1) { SET(rmdir(hostPath(utf16to8(gwstr(ARG(0)))).c_str()) == 0); }
+IMP_STD(K, CreateDirectoryW, 2) { SET(mkdir(hostPath(utf16to8(gwstr(ARG(0)))).c_str(), 0777) == 0); }
+IMP_STD(K, MoveFileW, 2) { SET(rename(hostPath(utf16to8(gwstr(ARG(0)))).c_str(), hostPath(utf16to8(gwstr(ARG(1)))).c_str()) == 0); }
+IMP_STD(K, CopyFileA, 3)
+{
+	FILE* a = fopen(hostPath(gstr(ARG(0))).c_str(), "rb");
+	if (!a) { SET(0); return; }
+	FILE* b = fopen(hostPath(gstr(ARG(1))).c_str(), "wb");
+	if (!b) { fclose(a); SET(0); return; }
+	char buf[65536]; size_t n;
+	while ((n = fread(buf, 1, sizeof buf, a)) > 0) fwrite(buf, 1, n, b);
+	fclose(a); fclose(b);
+	SET(1);
+}
+static void diskFree(CPU* c, uint32_t pFree, uint32_t pTotal, uint32_t pTotalFree)
+{
+	struct statvfs sv{};
+	statvfs(config.dataRoot.c_str(), &sv);
+	uint64_t fr = (uint64_t)sv.f_bavail * sv.f_frsize, tot = (uint64_t)sv.f_blocks * sv.f_frsize;
+	if (!tot) { fr = 8ull << 30; tot = 64ull << 30; }
+	if (pFree) guest::store<uint64_t>(pFree, fr);
+	if (pTotal) guest::store<uint64_t>(pTotal, tot);
+	if (pTotalFree) guest::store<uint64_t>(pTotalFree, fr);
+	SET(1);
+}
+IMP_STD(K, GetDiskFreeSpaceExA, 4) { diskFree(c, ARG(1), ARG(2), ARG(3)); }
+IMP_STD(K, GetDiskFreeSpaceExW, 4) { diskFree(c, ARG(1), ARG(2), ARG(3)); }
+
+static void fillFind(uint32_t out, const std::string& hp, const std::string& name, bool wide)
+{
+	struct stat st{};
+	stat((hp + "/" + name).c_str(), &st);
+	memset(guest::host(out), 0, wide ? 592 : 320);
+	guest::store<uint32_t>(out, S_ISDIR(st.st_mode) ? 0x10 : 0x80);
+	guest::store<uint64_t>(out + 4, toFileTime(st.st_ctime));
+	guest::store<uint64_t>(out + 12, toFileTime(st.st_atime));
+	guest::store<uint64_t>(out + 20, toFileTime(st.st_mtime));
+	guest::store<uint32_t>(out + 28, (uint32_t)((uint64_t)st.st_size >> 32));
+	guest::store<uint32_t>(out + 32, (uint32_t)st.st_size);
+	if (wide) putWStr(out + 44, utf8to16(name)); else putStr(out + 44, name);
+}
+static bool wildMatch(const char* p, const char* s)
+{
+	if (!*p) return !*s;
+	if (*p == '*') return wildMatch(p + 1, s) || (*s && wildMatch(p, s + 1));
+	if (*s && (*p == '?' || tolower((unsigned char)*p) == tolower((unsigned char)*s))) return wildMatch(p + 1, s + 1);
+	return false;
+}
+static void findFirst(CPU* c, const std::string& winPattern, uint32_t out, bool wide)
+{
+	size_t k = winPattern.find_last_of("\\/");
+	std::string dirWin = k == std::string::npos ? "." : winPattern.substr(0, k), pat = k == std::string::npos ? winPattern : winPattern.substr(k + 1);
+	std::string hp = hostPath(dirWin);
+	auto* fo = new FindObj;
+	fo->dirHost = hp;
+	if (isMovieFile(winPattern)) {}
+	else if (DIR* d = opendir(hp.c_str()))
+	{
+		while (auto* e = readdir(d)) if (wildMatch(pat.c_str(), e->d_name)) fo->names.push_back(e->d_name);
+		closedir(d);
+	}
+	{
+		static int finds = 0;
+		if (finds++ < 100) log("FindFirst '%s' -> '%s' : %d matches", winPattern.c_str(), hp.c_str(), (int)fo->names.size());
+	}
+	if (fo->names.empty()) { delete fo; setLastError(2); SET(0xffffffff); return; }
+	fillFind(out, hp, fo->names[fo->pos++], wide);
+	SET(newHandle(fo, KFind));
+}
+IMP_STD(K, FindFirstFileA, 2) { findFirst(c, gstr(ARG(0)), ARG(1), false); }
+IMP_STD(K, FindFirstFileW, 2) { findFirst(c, utf16to8(gwstr(ARG(0))), ARG(1), true); }
+IMP_STD(K, FindNextFileW, 2)
+{
+	auto* fo = (FindObj*)getHandle(ARG(0), KFind);
+	if (!fo || fo->pos >= fo->names.size()) { setLastError(18); SET(0); return; }
+	fillFind(ARG(1), fo->dirHost, fo->names[fo->pos++], true);
+	SET(1);
+}
+IMP_STD(K, FindNextFileA, 2)
+{
+	auto* fo = (FindObj*)getHandle(ARG(0), KFind);
+	if (!fo || fo->pos >= fo->names.size()) { setLastError(18); SET(0); return; }
+	fillFind(ARG(1), fo->dirHost, fo->names[fo->pos++], false);
+	SET(1);
+}
+IMP_STD(K, lstrcpyW, 2)
+{
+	uint32_t d = ARG(0), sp = ARG(1), i = 0;
+	for (;; i++) { uint16_t ch = guest::load<uint16_t>(sp + 2 * i); guest::store<uint16_t>(d + 2 * i, ch); if (!ch) break; }
+	SET(d);
+}
+IMP_STD(K, ExitProcess, 1) { log("ExitProcess(%u)", ARG(0)); traceDump(); fflush(nullptr); _exit((int)ARG(0)); }
+IMP_STD(K, TerminateProcess, 2) { log("TerminateProcess(%u)", ARG(1)); traceDump(); fflush(nullptr); _exit((int)ARG(1)); }
+IMP_STD(K, AllocConsole, 0) { SET(1); }
+IMP_STD(K, SetConsoleTitleA, 1) { SET(1); }
+IMP_STD(K, GetConsoleTitleA, 2) { if (ARG(1)) guest::store<uint8_t>(ARG(0), 0); SET(0); }
+IMP_STD(K, SetConsoleCtrlHandler, 2) { SET(1); }
+IMP_STD(K, SetConsoleCursorInfo, 2) { SET(1); }
+IMP_STD(K, SetConsoleMode, 2) { SET(1); }
+IMP_STD(K, SetConsoleWindowInfo, 3) { SET(1); }
+IMP_STD(K, GetDiskFreeSpaceA, 5)
+{
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), 8);
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), 512);
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), 4000000);
+	if (ARG(4)) guest::store<uint32_t>(ARG(4), 8000000);
+	SET(1);
+}
+IMP_STD(K, FindClose, 1) { if (auto* fo = (FindObj*)getHandle(ARG(0), KFind)) { delete fo; closeHandle(ARG(0)); } SET(1); }
+
+namespace rt
+{
+void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls) { bytes = gReadBytes; us = gReadUs; calls = gReadCalls; }
+}
+
+// ---- events for other modules (WS2_32 uses kernel events for WSAEVENTs and overlapped completion)
+namespace rt
+{
+uint32_t eventCreate(bool manual, bool initial)
+{
+	auto* w = new Waitable;
+	w->kind = KEvent; w->manual = manual; w->signaled = initial;
+	w->createdBy = thisThread().tid;
+	return newHandle(w, KEvent);
+}
+uint32_t getLastError() { return tctx.teb ? guest::load<uint32_t>(tctx.teb + 0x34) : 0; }
+void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(w); } }
+// per-thread WaitForSingleObject counts since the last call (thread monitor diagnostics)
+std::string waitStatsLine()
+{
+	std::lock_guard<std::mutex> l(waitMu);
+	std::string out;
+	for (int i = 0; i < 64; i++)
+	{
+		WaitStat& w = gWaitStats[i];
+		if (w.n < 600) { w = WaitStat(); continue; }
+		char b[96]; snprintf(b, sizeof b, " t%d: %llu waits, %llu timeouts, avg %.1f ms |", 0x1000 + i, (unsigned long long)w.n, (unsigned long long)w.timeouts, (double)w.ms / w.n);
+		out += b;
+		w = WaitStat();
+	}
+	return out;
+}
+void eventReset(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } }
+// index of the signalled object (all: 0 once all are), -1 on timeout
+int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
+{
+	uint32_t tid = thisThread().tid;
+	std::vector<Waitable*> ws;
+	for (int i = 0; i < n; i++) ws.push_back(asWaitable(hs[i]));
+	int hit = -1;
+	auto ready = [&] {
+		if (all)
+		{
+			for (auto* w : ws) if (w && !w->signaled && w->kind == KEvent) return false;
+			for (auto* w : ws) if (w) waitReady(w, tid);
+			hit = 0; return true;
+		}
+		for (int i = 0; i < n; i++) if (ws[i] && waitReady(ws[i], tid)) { hit = i; return true; }
+		return false;
+	};
+	std::vector<const void*> objs(ws.begin(), ws.end());
+	std::unique_lock<std::mutex> l(waitMu);
+	waitOn(l, objs.data(), (int)objs.size(), ms, ready);
+	return hit;
+}
+}
