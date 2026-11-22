@@ -32,9 +32,12 @@ struct Config
 	int buttonSize = 100;                // launcher: on-screen hotkey button size, percent
 	int buttonOpacity = 100;             // launcher: on-screen button opacity, percent
 	bool panInvert = false;              // launcher: a swipe drags the map (the camera moves the other way)
+	std::string gameVersion = "1.9";    // RetailExe/<version> holding the game file
+	std::string skuDef;                   // language config file name chosen by the launcher (empty: built from language/version)
 	bool wideScreen = false;             // launcher: game picture as wide as the screen allows (Options.ini resolution patched)            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
 };
 std::string commandLine();               // the game's command line (language config)
+std::string modulePath();                // C:\RA3\RetailExe\<version>\cnc3game.dat
 extern Config config;
 
 extern void (*logHook)(const char*);   // optional extra sink (on-screen console, logcat)

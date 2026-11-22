@@ -334,10 +334,9 @@ public class LauncherActivity extends Activity {
             showLanguage();
             return;
         }
-        // a remembered game file: re-resolve its exact name in that folder
+        // a remembered game file: re-resolve it in its game root (RetailExe/<version>: the build this APK was made from)
         if (!gamePath.isEmpty() && new File(gamePath).exists()) {
-            File p = new File(gamePath).getParentFile();
-            File g = p == null ? null : gameFileIn(p);
+            File g = findIn(new File(gameRoot()));
             if (g != null && !g.getAbsolutePath().equals(gamePath)) { gamePath = g.getAbsolutePath(); prefs.edit().putString("gamepath", gamePath).apply(); }
         }
         if ((gamePath.isEmpty() || !new File(gamePath).exists()) && !busy) {
@@ -375,10 +374,9 @@ public class LauncherActivity extends Activity {
     }
 
     String gameRoot() {
-        // <root>/RetailExe/1.9/cnc3game.dat -> <root>
+        // <root>/RetailExe/<version>/cnc3game.dat -> <root>
         File dir = new File(gamePath).getParentFile();
-        if (dir != null && dir.getName().equalsIgnoreCase(GAME_VERSION) && dir.getParentFile() != null
-                && dir.getParentFile().getName().equalsIgnoreCase("RetailExe")) dir = dir.getParentFile().getParentFile();
+        if (dir != null && dir.getParentFile() != null && dir.getParentFile().getName().equalsIgnoreCase("RetailExe")) dir = dir.getParentFile().getParentFile();
         return dir == null ? "" : dir.getAbsolutePath();
     }
 
@@ -388,10 +386,11 @@ public class LauncherActivity extends Activity {
         if (files != null)
             for (File f : files) {
                 String n = f.getName().toLowerCase(Locale.ROOT);
-                // CNC3_<language>_1.9.SkuDef: the language configs in the game root
-                String suffix = "_" + gameVersion() + ".skudef";
-                if (n.startsWith("cnc3_") && n.endsWith(suffix)) {
-                    String l = n.substring(5, n.length() - suffix.length());
+                // CNC3_<language>_<version>.SkuDef: the language configs in the game root (any version)
+                if (n.startsWith("cnc3_") && n.endsWith(".skudef")) {
+                    String core = n.substring(5, n.length() - 7);
+                    int us = core.lastIndexOf('_');
+                    String l = us > 0 ? core.substring(0, us) : core;
                     if (!l.isEmpty() && !languages.contains(l)) languages.add(l);
                 }
             }
@@ -471,9 +470,9 @@ public class LauncherActivity extends Activity {
         return root.getName();
     }
 
-    // The game file this APK runs (C&C 3 Tiberium Wars 1.9, Steam build without SecuROM). Its SHA-256 is stamped
-    // into BuildConfig.GAME_SHA256 by CI from the binary the code was recompiled from (empty: not checked).
-    static final String GAME_VERSION = "1.9";
+    // The game file this APK runs: <root>/RetailExe/<version>/cnc3game.dat of the Steam release (no SecuROM). The Steam
+    // folder can hold several versions (1.9, 1.10...): the one whose SHA-256 matches BuildConfig.GAME_SHA256 (stamped
+    // by CI from the binary the code was recompiled from) is used, otherwise the newest.
     static final String[] GAME_FILES = {"cnc3game.dat"};
     static boolean isGameFile(String name) { for (String g : GAME_FILES) if (name.equalsIgnoreCase(g)) return true; return false; }
     static File gameFileIn(File dir) {
@@ -482,7 +481,39 @@ public class LauncherActivity extends Activity {
         for (String g : GAME_FILES) for (File f : l) if (f.getName().equalsIgnoreCase(g)) return f;
         return null;
     }
-    String gameVersion() { return GAME_VERSION; }
+    // "1.10" > "1.9"
+    static int compareVersions(String a, String b) {
+        String[] x = a.split("\\."), y = b.split("\\.");
+        for (int i = 0; i < Math.max(x.length, y.length); i++) {
+            int p = 0, q = 0;
+            try { p = i < x.length ? Integer.parseInt(x[i]) : 0; } catch (NumberFormatException ignored) {}
+            try { q = i < y.length ? Integer.parseInt(y[i]) : 0; } catch (NumberFormatException ignored) {}
+            if (p != q) return Integer.compare(p, q);
+        }
+        return 0;
+    }
+    String gameVersion() {
+        File dir = new File(gamePath).getParentFile();
+        if (dir != null && dir.getParentFile() != null && dir.getParentFile().getName().equalsIgnoreCase("RetailExe")) return dir.getName();
+        return "1.9";
+    }
+    // the language config for the game version in use: CNC3_<lang>_<version>.SkuDef, else the newest one of that language
+    String skuDefName(String lang) {
+        File[] files = new File(gameRoot()).listFiles();
+        String best = null, bestVer = null;
+        String want = ("cnc3_" + lang + "_" + gameVersion() + ".skudef").toLowerCase(Locale.ROOT);
+        if (files != null)
+            for (File f : files) {
+                String n = f.getName().toLowerCase(Locale.ROOT);
+                if (n.equals(want)) return f.getName();
+                String pre = ("cnc3_" + lang + "_").toLowerCase(Locale.ROOT);
+                if (n.startsWith(pre) && n.endsWith(".skudef")) {
+                    String v = n.substring(pre.length(), n.length() - 7);
+                    if (bestVer == null || compareVersions(v, bestVer) > 0) { bestVer = v; best = f.getName(); }
+                }
+            }
+        return best != null ? best : "CNC3_" + lang + "_" + gameVersion() + ".SkuDef";
+    }
     Class<?> gameActivity() { return MainActivity.class; }
 
     // the game file (it sits in <root>/RetailExe/1.9) up to five levels below the root of the internal storage, a memory card or a USB drive
@@ -496,7 +527,12 @@ public class LauncherActivity extends Activity {
             File[] list = d.listFiles();
             if (list == null) continue;
             for (File f : list) {
-                if (isGameFile(f.getName())) { File g = gameFileIn(d); return (g != null ? g : f).getAbsolutePath(); }
+                if (isGameFile(f.getName())) {
+                    // inside RetailExe/<version>: choose among all versions of that game folder
+                    File root = d.getParentFile() != null && d.getParentFile().getName().equalsIgnoreCase("RetailExe") ? d.getParentFile().getParentFile() : d;
+                    File g = root == null ? null : findIn(root);
+                    return (g != null ? g : f).getAbsolutePath();
+                }
                 if (f.isDirectory() && dd < 5 && !f.getName().startsWith(".") && !f.getName().equalsIgnoreCase("android")) { q.add(f); depth.add(dd + 1); }
             }
         }
@@ -542,13 +578,22 @@ public class LauncherActivity extends Activity {
         bld.show();
     }
 
-    // the game file in this folder or in its RetailExe/1.9 subfolder
+    // the game file in this folder or in one of its RetailExe/<version> subfolders: the build matching this APK, else the newest
     File findIn(File dir) {
-        for (File base : new File[]{dir, new File(new File(dir, "RetailExe"), GAME_VERSION)}) {
-            File g = gameFileIn(base);
-            if (g != null) return g;
+        File direct = gameFileIn(dir);
+        if (direct != null) return direct;
+        File[] vers = new File(dir, "RetailExe").listFiles();
+        if (vers == null) vers = new File(dir, "retailexe").listFiles();
+        if (vers == null) return null;
+        File newest = null; String newestVer = null;
+        for (File v : vers) {
+            if (!v.isDirectory()) continue;
+            File g = gameFileIn(v);
+            if (g == null) continue;
+            if (!BuildConfig.GAME_SHA256.isEmpty() && BuildConfig.GAME_SHA256.equalsIgnoreCase(sha256(g))) return g;
+            if (newestVer == null || compareVersions(v.getName(), newestVer) > 0) { newestVer = v.getName(); newest = g; }
         }
-        return null;
+        return newest;
     }
 
     void requestStorage() {
@@ -590,7 +635,7 @@ public class LauncherActivity extends Activity {
             File root = new File(gameRoot());
             List<String> files = new ArrayList<>();
             ArrayDeque<String> configs = new ArrayDeque<>();
-            configs.add("CNC3_" + lang + "_" + ver + ".SkuDef");
+            configs.add(skuDefName(lang));
             List<String> seen = new ArrayList<>();
             while (!configs.isEmpty()) {
                 String c = configs.poll();
@@ -606,7 +651,7 @@ public class LauncherActivity extends Activity {
                     else if (w[0].equalsIgnoreCase("add-config")) configs.add(w[1].trim());
                 }
             }
-            files.add("RetailExe/" + GAME_VERSION + "/" + gameFile.getName());
+            files.add("RetailExe/" + ver + "/" + gameFile.getName());
             List<String> missing = new ArrayList<>();
             long start = System.currentTimeMillis();
             for (int i = 0; i < files.size(); i++) {
@@ -694,6 +739,7 @@ public class LauncherActivity extends Activity {
         cfg.append("button_opacity=").append(prefs.getInt("button_opacity", 100)).append('\n');
         cfg.append("pan_invert=").append(prefs.getBoolean("pan_invert", false) ? 1 : 0).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
+        cfg.append("skudef=").append(skuDefName(prefs.getString("language", "russian"))).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
             o.write(cfg.toString().getBytes("UTF-8"));
         } catch (Exception ignored) {}

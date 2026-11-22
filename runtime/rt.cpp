@@ -474,7 +474,15 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 uint32_t g_eflags_hi = 0;
 uint32_t ra3_stub_tolower = 0xffffffffu;
 
-namespace rt { std::string commandLine() { return std::string("\"") + gb::kModulePath + "\" -config " + gb::kSkuPrefix + "_" + config.language + "_" + gb::kVer + ".SkuDef -win"; } }
+namespace rt
+{
+std::string modulePath() { return "C:\\RA3\\RetailExe\\" + config.gameVersion + "\\" + gb::kExe; }
+std::string commandLine()
+{
+	std::string sku = !config.skuDef.empty() ? config.skuDef : std::string(gb::kSkuPrefix) + "_" + config.language + "_" + config.gameVersion + ".SkuDef";
+	return "\"" + modulePath() + "\" -config " + sku + " -win";
+}
+}
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 bool ra3_gate(CPU* c, uint32_t fn)
 {

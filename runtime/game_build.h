@@ -1,7 +1,8 @@
 #pragma once
-// The game build this library was recompiled from: C&C 3 Tiberium Wars 1.9 (Steam, cnc3game.dat without SecuROM).
+// The game build this library was recompiled from: C&C 3 Tiberium Wars (Steam, cnc3game.dat without SecuROM).
 //
-// Layout of the game folder:  <root>/RetailExe/1.9/cnc3game.dat, <root>/CNC3_<language>_1.9.SkuDef, <root>/Core/...
+// Layout of the game folder:  <root>/RetailExe/<version>/cnc3game.dat, <root>/CNC3_<language>_<version>.SkuDef, ...
+// (the Steam folder can carry several versions, e.g. 1.9 and 1.10)
 // The guest sees <root> as C:\RA3 (the runtime's internal name for the game mount) and starts with that as its
 // working directory, so the relative paths in the SkuDef files resolve against the game root.
 //
@@ -11,10 +12,9 @@
 
 namespace gb {
 constexpr const char* kExe = "cnc3game.dat";
-constexpr const char* kVer = "1.9";
-constexpr const char* kExeDir = "RetailExe/1.9";          // game file location below the root (host side)
-constexpr const char* kModulePath = "C:\\RA3\\RetailExe\\1.9\\cnc3game.dat";   // GetModuleFileName
-constexpr const char* kSkuPrefix = "CNC3";                 // CNC3_<language>_1.9.SkuDef
+constexpr const char* kVer = "1.9";                       // default version; the real one is the RetailExe/<version>
+                                                           // folder the launcher picked (rt::config.gameVersion)
+constexpr const char* kSkuPrefix = "CNC3";                 // CNC3_<language>_<version>.SkuDef
 constexpr const char* kProfilesDir = "command & conquer 3 tiberium wars/profiles";   // under My Documents (lower case)
 
 constexpr uint32_t ResModeCheck = 0;

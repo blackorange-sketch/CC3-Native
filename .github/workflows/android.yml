@@ -83,6 +83,7 @@ jobs:
       # Import coverage: every import of the binary should have a host implementation (or a deliberate stub)
       - name: Import coverage
         run: |
+          python3 tools/pe_imports.py game/cnc3game.dat | sed -n '1,20p'   # sections: SecuROM would show up here
           python3 tools/pe_imports.py game/cnc3game.dat --json > imports.json
           python3 tools/coverage.py imports.json runtime | tee coverage.txt
 

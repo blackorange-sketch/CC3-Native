@@ -86,17 +86,44 @@ std::string pickDir = "/sdcard", savedFile;
 std::vector<PickEntry> pickEntries;
 int pickScroll = 0, pickCh = 32;
 
-// cnc3game.dat directly inside dir, or inside dir/RetailExe/1.9 (case-insensitive); empty if none
+// cnc3game.dat directly inside dir (case-insensitive); empty if none
+static std::string gameFileIn(const std::string& base)
+{
+	std::string r;
+	if (DIR* d = opendir(base.c_str()))
+	{
+		while (auto* e = readdir(d))
+			if (lower(e->d_name) == gb::kExe) { r = base + "/" + e->d_name; break; }
+		closedir(d);
+	}
+	return r;
+}
+// "1.10" > "1.9"
+static bool newerVersion(const std::string& a, const std::string& b)
+{
+	int a1 = 0, a2 = 0, b1 = 0, b2 = 0;
+	sscanf(a.c_str(), "%d.%d", &a1, &a2); sscanf(b.c_str(), "%d.%d", &b1, &b2);
+	return a1 != b1 ? a1 > b1 : a2 > b2;
+}
+// cnc3game.dat inside dir, or the newest dir/RetailExe/<version>/cnc3game.dat (the launcher normally passes the exact file)
 std::string gameIn(const std::string& dir)
 {
-	for (const std::string& base : {dir, dir + "/" + gb::kExeDir, dir + "/retailexe/" + std::string(gb::kVer)})
-		if (DIR* d = opendir(base.c_str()))
+	std::string g = gameFileIn(dir);
+	if (!g.empty()) return g;
+	std::string best, bestVer;
+	for (const char* rx : {"/RetailExe", "/retailexe"})
+		if (DIR* d = opendir((dir + rx).c_str()))
 		{
 			while (auto* e = readdir(d))
-				if (lower(e->d_name) == gb::kExe) { std::string r = base + "/" + e->d_name; closedir(d); return r; }
+			{
+				if (e->d_name[0] == '.') continue;
+				std::string f = gameFileIn(dir + rx + "/" + e->d_name);
+				if (!f.empty() && (bestVer.empty() || newerVersion(e->d_name, bestVer))) { best = f; bestVer = e->d_name; }
+			}
 			closedir(d);
+			if (!best.empty()) break;
 		}
-	return "";
+	return best;
 }
 
 void rebuildPick()
@@ -397,9 +424,20 @@ static void patchProfileResolutions()
 void startGame(const std::string& game)
 {
 	std::string dir = game.substr(0, game.rfind('/'));
-	// <root>/RetailExe/1.9/cnc3game.dat -> <root>
-	std::string sub = "/" + lower(gb::kExeDir);
-	rt::config.gameRoot = dir.size() > sub.size() && lower(dir.substr(dir.size() - sub.size())) == sub ? dir.substr(0, dir.size() - sub.size()) : dir;
+	// <root>/RetailExe/<version>/cnc3game.dat -> <root>, version from the folder name
+	rt::config.gameRoot = dir;
+	size_t s1 = dir.rfind('/');
+	if (s1 != std::string::npos && s1 > 0)
+	{
+		std::string ver = dir.substr(s1 + 1), parent = dir.substr(0, s1);
+		size_t s2 = parent.rfind('/');
+		if (s2 != std::string::npos && lower(parent.substr(s2 + 1)) == "retailexe")
+		{
+			rt::config.gameRoot = parent.substr(0, s2);
+			rt::config.gameVersion = ver;
+		}
+	}
+	pushLine("game version: " + rt::config.gameVersion + (rt::config.skuDef.empty() ? "" : ", config " + rt::config.skuDef));
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
 	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d, wide screen %d, buttons %d%% / opacity %d%%, drag the map %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders, (int)rt::config.wideScreen, rt::config.buttonSize, rt::config.buttonOpacity, (int)rt::config.panInvert);
@@ -521,6 +559,7 @@ void android_main(android_app* app)
 			if (eq == std::string::npos) continue;
 			std::string k = l.substr(0, eq), v = l.substr(eq + 1);
 			if (k == "language" && !v.empty() && v.find_first_of("/\\ \"") == std::string::npos) rt::config.language = v;
+			else if (k == "skudef" && !v.empty() && v.find_first_of("/\\\"") == std::string::npos) rt::config.skuDef = v;
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";

@@ -671,8 +671,8 @@ IMP_STD(K, GetSystemInfo, 1)
 	guest::store<uint32_t>(p + 28, 0x10000);
 }
 IMP_STD(K, GetModuleHandleA, 1) { SET(ARG(0) ? 0x7ff00000 : imageBase); }
-IMP_STD(K, GetModuleFileNameA, 3) { std::string s = gb::kModulePath; uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
-IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16(std::string(gb::kModulePath)); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
+IMP_STD(K, GetModuleFileNameA, 3) { std::string s = rt::modulePath(); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
+IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16(rt::modulePath()); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
 IMP_STD(K, GetCommandLineA, 0) { static uint32_t a = newStr(rt::commandLine()); SET(a); }
 IMP_STD(K, GetCommandLineW, 0) { static uint32_t a = [] { auto s = utf8to16(rt::commandLine()); uint32_t p = gmalloc(2 * s.size() + 2); putWStr(p, s); return p; }(); SET(a); }
 IMP_STD(K, GetStartupInfoA, 1) { memset(guest::host(ARG(0)), 0, 68); guest::store<uint32_t>(ARG(0), 68); }
