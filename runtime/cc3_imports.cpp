@@ -287,7 +287,7 @@ IMP_ID(K32, "GetFullPathNameA", GetFullPathNameA, 16)
 }
 IMP_ID(K32, "QueueUserAPC", QueueUserAPC, 12) { log("QueueUserAPC(%08x, %08x, %08x): not supported", ARG(0), ARG(1), ARG(2)); SET(0); }
 IMP_ID(K32, "CreateProcessA", CreateProcessA, 40) { log("CreateProcessA(%s, %s): refused", ARG(0) ? gstr(ARG(0)).c_str() : "-", ARG(1) ? gstr(ARG(1)).c_str() : "-"); setLastError(2); SET(0); }
-IMP_ID(K32, "CreateProcessW", CreateProcessW, 40) { log("CreateProcessW: refused"); setLastError(2); SET(0); }
+IMP_ID(K32, "CreateProcessW", CreateProcessW, 40) { log("CreateProcessW(%s, %s): refused", ARG(0) ? utf16to8(gwstr(ARG(0))).c_str() : "-", ARG(1) ? utf16to8(gwstr(ARG(1))).c_str() : "-"); setLastError(2); SET(0); }
 IMP_ID(K32, "GetExitCodeProcess", GetExitCodeProcess, 8) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); SET(1); }
 IMP_ID(K32, "GetEnvironmentStrings", GetEnvironmentStrings, 0) { static uint32_t a = [] { uint32_t p = gmalloc(4); guest::store<uint32_t>(p, 0); return p; }(); SET(a); }
 IMP_ID(K32, "CreateDirectoryA", CreateDirectoryA, 8)

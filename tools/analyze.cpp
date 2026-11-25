@@ -148,6 +148,7 @@ int main(int argc, char** argv)
 	std::map<std::string, uint64_t> exotic;
 
 	std::set<uint32_t> immCand;
+	std::set<uint32_t> afterUncond;   // addresses right after a decoded unconditional jmp (any form) or ret
 	auto drain = [&]()
 	{
 	while (!work.empty())
@@ -171,6 +172,7 @@ int main(int argc, char** argv)
 				st["instructions"]++;
 				cs_x86& x = insn->detail->x86;
 				auto id = insn->id;
+				if (id == X86_INS_JMP || id == X86_INS_RET || id == X86_INS_RETF) afterUncond.insert(pc + insn->size);
 				bool term = false;
 
 				for (int g = 0; g < insn->detail->groups_count; g++)
@@ -256,14 +258,15 @@ int main(int argc, char** argv)
 
 	};
 	drain();
-	// Immediates that point right after an unconditional jump/ret that has been decoded, at an address no decoded
+	// Immediates that point right after an unconditional jump/ret that has been decoded (any form, also
+	// `jmp [eax+8]`), at an address no decoded
 	// instruction covers, are function pointers too (e.g. `mov [eax], offset fn` where fn follows a short jmp).
 	for (bool again = true; again;)
 	{
 		again = false;
 		auto at = [&](uint32_t va, uint8_t b) { uint8_t x = 0; return seenInsn.count(va) && readVA(va, &x, 1) && x == b; };
 		for (uint32_t v : immCand)
-			if (!funcs.count(v) && !seenInsn.count(v) && (at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2)))
+			if (!funcs.count(v) && !seenInsn.count(v) && (afterUncond.count(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2)))
 			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
 		if (again) drain();
 	}
