@@ -39,6 +39,7 @@ def parse(path):
     dd_off = opt + (112 if is64 else 96)
     import_rva, import_size = struct.unpack_from("<II", data, dd_off + 8)
     delay_rva = struct.unpack_from("<I", data, dd_off + 13 * 8)[0]
+    export_rva = struct.unpack_from("<I", data, dd_off)[0]
 
     sections = []
     sec_off = opt + opt_size
@@ -91,7 +92,16 @@ def parse(path):
         delay[dll] = funcs
         off += 32
 
+    exports = []
+    eo = rva_to_off(export_rva, sections) if export_rva else None
+    if eo is not None:
+        n_names, names_rva = struct.unpack_from("<I", data, eo + 0x18)[0], struct.unpack_from("<I", data, eo + 0x20)[0]
+        no = rva_to_off(names_rva, sections)
+        for i in range(n_names if no is not None else 0):
+            exports.append(cstr(data, rva_to_off(struct.unpack_from("<I", data, no + 4 * i)[0], sections)))
+
     return {
+        "exports": exports,
         "delay_imports": delay,
         "file": path,
         "machine": MACHINES.get(machine, hex(machine)),
@@ -119,6 +129,8 @@ def main():
     odd = [s["name"] for s in info["sections"] if s["name"] not in known]
     if odd:
         print(f"  ! non-standard sections (possible protection): {', '.join(odd)}")
+    if info["exports"]:
+        print(f"  exports ({len(info['exports'])}): {', '.join(info['exports'][:30])}")
     for dll, funcs in info["delay_imports"].items():
         print(f"  delay-loaded: {dll} ({len(funcs)}): {', '.join(funcs[:40])}")
     total = sum(len(f) for f in info["imports"].values())

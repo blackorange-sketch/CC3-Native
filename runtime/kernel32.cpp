@@ -668,6 +668,26 @@ IMP_STD(K, LoadLibraryA, 1)
 	SET(0); setLastError(126);
 }
 IMP_STD(K, FreeLibrary, 1) { SET(1); }
+// GetProcAddress on the game's own module: its PE export table (headers are mapped at the image base). The Steam
+// build exports its MemoryPool / Debug hooks and looks them up in itself at start; without them it calls null.
+static uint32_t imageExport(const std::string& name)
+{
+	uint32_t pe = imageBase + guest::load<uint32_t>(imageBase + 0x3c);
+	uint32_t dirRva = guest::load<uint32_t>(pe + 0x78), dirSize = guest::load<uint32_t>(pe + 0x7c);
+	if (!dirRva || !dirSize) return 0;
+	uint32_t d = imageBase + dirRva;
+	uint32_t ordBase = guest::load<uint32_t>(d + 0x10), nFuncs = guest::load<uint32_t>(d + 0x14), nNames = guest::load<uint32_t>(d + 0x18);
+	uint32_t funcs = imageBase + guest::load<uint32_t>(d + 0x1c), names = imageBase + guest::load<uint32_t>(d + 0x20), ords = imageBase + guest::load<uint32_t>(d + 0x24);
+	uint32_t idx = 0xffffffffu;
+	if (name.size() > 1 && name[0] == '#') idx = (uint32_t)atoi(name.c_str() + 1) - ordBase;
+	else
+		for (uint32_t i = 0; i < nNames; i++)
+			if (gstr(imageBase + guest::load<uint32_t>(names + 4 * i)) == name) { idx = guest::load<uint16_t>(ords + 2 * i); break; }
+	if (idx >= nFuncs) return 0;
+	uint32_t rva = guest::load<uint32_t>(funcs + 4 * idx);
+	if (!rva || (rva >= dirRva && rva < dirRva + dirSize)) return 0;   // forwarded exports: none expected
+	return imageBase + rva;
+}
 IMP_STD(K, GetProcAddress, 2)
 {
 	std::string name = ARG(1) >= 0x10000 ? gstr(ARG(1)) : "#" + std::to_string(ARG(1));
@@ -681,6 +701,7 @@ IMP_STD(K, GetProcAddress, 2)
 	}
 	if (ARG(0) == 0x7ff00000) dll = "kernel32.dll";
 	uint32_t f = dll.empty() ? 0 : imports::bindKnown(dll, name);
+	if (ARG(0) == imageBase || ARG(0) == 0) { dll = "game"; f = imageExport(name); }
 	static int n = 0;
 	if (n++ < 60) log("GetProcAddress(%08x %s, %s) -> %08x", ARG(0), dll.c_str(), name.c_str(), f);
 	if (f) { SET(f); return; }

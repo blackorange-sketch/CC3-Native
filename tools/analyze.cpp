@@ -17,6 +17,7 @@ struct Section { std::string name; uint32_t va, vsize, raw, rsize, flags; };
 static std::vector<uint8_t> file;
 static std::vector<Section> secs;
 static uint32_t imageBase, entryRva;
+static std::vector<uint32_t> exportRvas;   // functions the image exports (GetProcAddress on itself)
 static std::map<uint32_t, std::string> iat;  // VA of IAT slot -> "dll!name"
 
 template <class T> static T rd(size_t off) { T v; memcpy(&v, &file[off], sizeof v); return v; }
@@ -93,6 +94,20 @@ static void loadPE(const char* path)
 			iat[imageBase + first + i * 4] = dll + "!" + nm;
 		}
 	}
+
+	// Export directory: the Steam build of C&C 3 exports its MemoryPool / Debug hooks and finds them through
+	// GetProcAddress on its own module, so every exported function is a root
+	uint32_t expRva = rd<uint32_t>(opt + 96), expSize = rd<uint32_t>(opt + 100);
+	if (expRva && rvaOff(expRva) != (size_t)-1)
+	{
+		size_t d = rvaOff(expRva);
+		uint32_t nFuncs = rd<uint32_t>(d + 0x14), funcs = rd<uint32_t>(d + 0x1c);
+		for (uint32_t i = 0; i < nFuncs && rvaOff(funcs) != (size_t)-1; i++)
+		{
+			uint32_t r = rd<uint32_t>(rvaOff(funcs) + 4 * i);
+			if (r && !(r >= expRva && r < expRva + expSize)) exportRvas.push_back(r);
+		}
+	}
 }
 
 int main(int argc, char** argv)
@@ -113,6 +128,7 @@ int main(int argc, char** argv)
 	};
 
 	addFunc(imageBase + entryRva);
+	for (uint32_t r : exportRvas) addFunc(imageBase + r);
 
 	// Seeds: aligned pointers into code in data sections (vtables, callback tables).
 	size_t dataPtrs = 0;
@@ -269,7 +285,7 @@ int main(int argc, char** argv)
 		}
 		if (again) drain();
 	}
-	printf("image base 0x%x entry 0x%x\n", imageBase, imageBase + entryRva);
+	printf("image base 0x%x entry 0x%x, %zu exported functions\n", imageBase, imageBase + entryRva, exportRvas.size());
 	printf("functions: %zu (seeds from data pointers: %zu)\n", funcs.size(), dataPtrs);
 	printf("distinct jump-table targets: %zu\n", tableTargets.size());
 	for (auto& [k, v] : st) printf("%-20s %llu\n", k.c_str(), (unsigned long long)v);
