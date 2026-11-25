@@ -59,8 +59,8 @@ void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative Re
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // ---- guest memory layout
-constexpr uint32_t HeapBase = 0x01000000, HeapEnd = 0x48000000;      // malloc arena (1.1 GiB)
-constexpr uint32_t VmBase = 0x48000000, VmEnd = 0x6e000000;           // VirtualAlloc (608 MiB: CC3 reserves a 256 MiB pool at start)
+constexpr uint32_t HeapBase = 0x01000000, HeapEnd = 0x58000000;      // malloc arena (1.4 GiB)
+constexpr uint32_t VmBase = 0x58000000, VmEnd = 0x6e000000;           // VirtualAlloc (352 MiB: CC3 reserves a 256 MiB pool at start)
 constexpr uint32_t ThreadBase = 0x71000000, ThreadEnd = 0x7f000000;   // thread stacks and TEBs
 constexpr uint32_t StackSize = 0x400000;
 constexpr uint32_t ExitMagic = 0xfffffff0;
@@ -72,7 +72,8 @@ void gfree(uint32_t p);
 uint32_t grealloc(uint32_t p, uint32_t size);
 uint32_t gsize(uint32_t p);
 uint32_t vmAlloc(uint32_t size);
-bool vmRelease(uint32_t addr);   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
+bool vmRelease(uint32_t addr);
+void setHeapReclaim(void (*fn)());   // called (outside the heap lock) when the malloc arena is about to run out   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
 
 // ---- strings
 std::string gstr(uint32_t a);                  // NUL-terminated byte string

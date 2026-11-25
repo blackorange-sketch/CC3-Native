@@ -46,12 +46,24 @@ void commitTo(uint32_t end)
 void heapInit() {}
 uint64_t heapLiveBytes() { std::lock_guard<std::mutex> l(mu); return liveBytes; }
 
+namespace { void (*reclaimHook)() = nullptr; thread_local bool inReclaim = false; }
+void setHeapReclaim(void (*fn)()) { reclaimHook = fn; }
+
 uint32_t gmalloc(uint32_t size, uint32_t align)
 {
-	std::lock_guard<std::mutex> l(mu);
+	std::unique_lock<std::mutex> l(mu);
 	uint32_t cls = classOf(size ? size : 1);
 	if (align > 16) cls = classOf(cls + align);
 	lastReq = size;
+	// about to run out: let the owner of released data (D3D textures the game let go of) free it, then retry
+	if (reclaimHook && !inReclaim && freeBySize[cls].empty() && ((bump + 31) & ~15u) + cls > HeapEnd)
+	{
+		l.unlock();
+		inReclaim = true;
+		reclaimHook();
+		inReclaim = false;
+		l.lock();
+	}
 	auto& fl = freeBySize[cls];
 	uint32_t block;
 	if (!fl.empty()) { block = fl.back(); fl.pop_back(); freeBytes -= cls; }

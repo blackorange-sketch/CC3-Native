@@ -2873,17 +2873,43 @@ static void presentImpl()
 	if (!rec::gOn) gfx::release();   // hand the context over: a different game thread may render next
 }
 
+// The guest heap is about to run out (CC3 reloads all its textures in one go, without presenting a frame): free the
+// guest-side data of released objects now; their GL names go at the next present (reapReleased).
+static void reclaimGuestData()
+{
+	uint32_t frame = gFrameNo;
+	uint64_t bytes = 0, n = 0;
+	for (Obj* o : takeReleased())
+	{
+		bool bound = o->ref > 0 || o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
+		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
+		if (!bound && o->ownsData && o->data && frame - o->lastUse >= 3 && o->lastUse <= frame)
+		{
+			bytes += o->size; n++;
+			rt::gfree(o->data); o->data = 0;
+			o->glVer = 0;
+		}
+		requeueReleased(o);
+	}
+	log("mem: guest heap nearly full - freed the data of %llu released d3d objects (%llu MiB)", (unsigned long long)n, (unsigned long long)(bytes >> 20));
+}
+static const bool kReclaimHook = (rt::setHeapReclaim(reclaimGuestData), true);
+
 // Reclaim objects the game released: GL names and the guest-side copy of the data.
 static void reapReleased(uint32_t frame)
 {
 	static uint64_t freedBytes = 0, freedObjs = 0;
 	static uint32_t lastLog = 0;
+	bool pressure = rt::heapLiveBytes() > (uint64_t)(rt::HeapEnd - rt::HeapBase) / 2;
 	for (Obj* o : takeReleased())
 	{
 		if (o->ref > 0) { o->released = false; continue; }                       // referenced again
 		bool bound = o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
 		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
-		if (bound || frame - o->lastUse < 1800 || o->lastUse > frame) { requeueReleased(o); continue; }
+		// released objects normally wait a while (the game may still draw them in a frame or two); when the guest heap
+		// fills up (CC3 reloads every texture when the settings change), only the frames still in flight are kept
+		uint32_t keep = pressure ? 3 : 1800;
+		if (bound || frame - o->lastUse < keep || o->lastUse > frame) { requeueReleased(o); continue; }
 		if (o->glTex) { glDeleteTextures(1, &o->glTex); o->glTex = 0; gFboDirty = true; gTexBindDirty = true; }
 		if (o->glBuf) { glDeleteBuffers(1, &o->glBuf); o->glBuf = 0; invalidateAttribCache(); }
 		o->glVer = 0; o->glSize = 0;
