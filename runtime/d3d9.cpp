@@ -335,7 +335,29 @@ H("Common::Release")
 	if (r <= 0) noteReleased(o);
 	SET(r < 0 ? 0 : r);
 } END;
-H("Common::QueryInterface") { if (ARG(2)) guest::store<uint32_t>(ARG(2), 0); SET(0x80004002); } END;
+// QueryInterface: the object itself for IUnknown and every interface it implements (CC3 asks a texture for
+// IDirect3DTexture9 before GetSurfaceLevel - the movie player's frame planes need it). Matched on Data1.
+H("Common::QueryInterface")
+{
+	uint32_t want = ARG(1) ? guest::load<uint32_t>(ARG(1)) : 0xffffffffu;
+	bool ok = want == 0x00000000u;   // IUnknown
+	switch (o ? o->iface : INumIfaces)
+	{
+	case ITexture: ok |= want == 0x85c31227u || want == 0x580ca87eu || want == 0x05eec05du; break;
+	case ICube: ok |= want == 0xfff32f81u || want == 0x580ca87eu || want == 0x05eec05du; break;
+	case IVolume: ok |= want == 0x2518526cu || want == 0x580ca87eu || want == 0x05eec05du; break;
+	case ISurface: ok |= want == 0x0cfbaf3au || want == 0x05eec05du; break;
+	case IVB: ok |= want == 0xb64bb1b5u || want == 0x05eec05du; break;
+	case IIB: ok |= want == 0x7c9dd65eu || want == 0x05eec05du; break;
+	case IDevice: ok |= want == 0xd0223b96u; break;
+	case IDirect3D9: ok |= want == 0x81bdcbcau; break;
+	default: break;
+	}
+	if (!o) ok = false;
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), ok ? o->addr : 0);
+	if (ok) o->ref++;
+	SET(ok ? 0 : 0x80004002);
+} END;
 H("Common::GetDevice") { if (ARG(1) && theDevice) { guest::store<uint32_t>(ARG(1), theDevice->addr); theDevice->ref++; } SET(0); } END;
 
 // ---- IDirect3D9

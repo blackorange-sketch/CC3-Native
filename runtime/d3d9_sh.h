@@ -136,6 +136,7 @@ struct Translator
 	std::set<int> ocUsed;
 	int repN = 0;
 	bool vs3 = false;
+	bool ps1 = false;
 
 	Translator(ShaderInfo& s, const uint32_t* words, size_t n) : si(s), w(words), nw(n) {}
 
@@ -305,7 +306,8 @@ struct Translator
 		if (!si.isVs && (ver >> 16) != 0xffff) return fail("bad version token");
 		si.major = (ver >> 8) & 0xff;
 		si.minor = ver & 0xff;
-		if (si.major < 2 || si.major > 3) return fail("unsupported shader model");
+		if (si.major < 1 || si.major > 3) return fail("unsupported shader model");
+		ps1 = !si.isVs && si.major < 2;
 		vs3 = si.isVs && si.major >= 3;
 		size_t p = 1;
 		std::vector<std::pair<int, int>> repStack;
@@ -326,6 +328,13 @@ struct Translator
 				continue;
 			}
 			int len = (tok >> 24) & 15;
+			if (si.major < 2)
+			{
+				// shader model 1 does not encode the instruction length: the parameter tokens are the ones with bit 31 set
+				if (op == 81) len = 5;
+				else { len = 0; while (p + 1 + len < nw && (w[p + 1 + len] >> 31)) len++; }
+			}
+			if (op == 0xfffd) { p++; continue; }   // ps_1_4 phase
 			int ctrl = (tok >> 16) & 0xff;
 			size_t q = p + 1;
 			size_t end = p + 1 + len;
@@ -421,9 +430,35 @@ struct Translator
 				if (!parseDst(q, d) || !S(a) || !S(b) || !S(c)) return false;
 				assign(d, "vec4(dot((" + a + ").xy, (" + b + ").xy) + (" + c + ").x)");
 				break;
+			case 64:   // texcoord (ps_1_1-1_3) / texcrd (ps_1_4): the interpolated coordinate itself
+				if (!ps1 || !parseDst(q, d)) return ps1 ? false : fail("unsupported opcode 64");
+				if (q < end) { if (!S(a)) return false; }
+				else { a = d.name; }
+				assign(d, "clamp(" + a + ", 0.0, 1.0)");
+				break;
+			case 80:   // cnd (ps_1_x)
+				if (!parseDst(q, d) || !S(a) || !S(b) || !S(c)) return false;
+				assign(d, "mix(" + c + ", " + b + ", vec4(greaterThan(" + a + ", vec4(0.5))))");
+				break;
 			case 66:   // texld
 			case 95:   // texldl
 			{
+				if (ps1)
+				{
+					// ps_1_1-1_3: "tex t#" samples stage # at texcoord #; ps_1_4: "texld r#, t#|r#" samples stage # (dst number)
+					if (!parseDst(q, d)) return false;
+					std::string co;
+					if (q < end) { if (!S(co)) return false; }
+					else co = d.name;
+					int sn = (int)(w[p + 1] & 0x7ff);
+					if (sn >= 16) return fail("sampler idx");
+					if (!si.samplerType[sn]) si.samplerType[sn] = 2;
+					char sb[16];
+					snprintf(sb, sizeof sb, "s%d", sn);
+					if (si.samplerType[sn] == 3 || si.samplerType[sn] == 4) assign(d, std::string("texture(") + sb + ", (" + co + ").xyz)");
+					else assign(d, std::string("texture(") + sb + ", (" + co + ").xy)");
+					break;
+				}
 				if (!parseDst(q, d) || !S(a)) return false;
 				if (q >= nw) return fail("trunc tex");
 				uint32_t st = w[q++];
@@ -489,6 +524,7 @@ struct Translator
 			}
 			p = end;
 		}
+		if (ps1) { temps.insert(0); ocUsed.insert(0); line("oC0 = r0;"); }   // shader model 1: the colour is r0
 		return true;
 	}
 };
