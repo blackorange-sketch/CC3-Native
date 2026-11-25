@@ -280,8 +280,21 @@ int main(int argc, char** argv)
 		// unconditional jmp the address may already be decoded as unreachable bytes of the thunk before it: it is
 		// still an entry of its own.
 		auto endsInJmp = endsJmpBytes;
+		// the code before v was never decoded (its function has no known entry), but its last bytes read as a
+		// `ret n` (small n, multiple of 4) or an indirect jmp: with an immediate pointing here, v starts a function
+		auto rawEnd = [&](uint32_t v) {
+			uint8_t b[3] = {};
+			if (!readVA(v - 3, b, 3)) return false;
+			if (b[0] == 0xc2 && b[2] == 0 && b[1] % 4 == 0 && b[1] <= 0x40) return true;
+			if (b[2] == 0xc3 || b[1] == 0xeb) return true;   // ret, short jmp
+			uint8_t f[5] = {};
+			if (readVA(v - 5, f, 5) && f[0] == 0xe9) return true;   // near jmp
+			uint8_t pro[3] = {};
+			if (readVA(v, pro, 3) && pro[0] == 0x55 && pro[1] == 0x8b && pro[2] == 0xec) return true;   // push ebp; mov ebp, esp
+			return endsJmpBytes(v);
+		};
 		for (uint32_t v : immCand)
-			if (!funcs.count(v) && ((!seenInsn.count(v) && (afterUncond.count(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2))) || (afterUncond.count(v) && endsInJmp(v))))
+			if (!funcs.count(v) && ((!seenInsn.count(v) && (afterUncond.count(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2) || rawEnd(v))) || (afterUncond.count(v) && endsInJmp(v))))
 			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
 		if (again) drain();
 	}
