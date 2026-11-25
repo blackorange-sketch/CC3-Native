@@ -71,7 +71,8 @@ uint32_t gmalloc(uint32_t size, uint32_t align = 16);
 void gfree(uint32_t p);
 uint32_t grealloc(uint32_t p, uint32_t size);
 uint32_t gsize(uint32_t p);
-uint32_t vmAlloc(uint32_t size);   // page granular, committed, zeroed
+uint32_t vmAlloc(uint32_t size);
+bool vmRelease(uint32_t addr);   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
 
 // ---- strings
 std::string gstr(uint32_t a);                  // NUL-terminated byte string

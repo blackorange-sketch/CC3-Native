@@ -103,16 +103,56 @@ uint32_t grealloc(uint32_t p, uint32_t size)
 	return n;
 }
 
+namespace
+{
+std::mutex vmu;
+uint32_t vmNext = VmBase;
+std::map<uint32_t, uint32_t> vmLive;   // VirtualAlloc'ed blocks: address -> size
+std::map<uint32_t, uint32_t> vmFree;   // released ranges (merged): address -> size
+uint64_t vmLiveBytes = 0;
+}
+
+// VirtualAlloc: 64 KiB granular, committed, zeroed. Released blocks (VirtualFree MEM_RELEASE) are reused first fit -
+// CC3's memory pools and the movie player allocate and release large blocks all the time.
 uint32_t vmAlloc(uint32_t size)
 {
-	static std::mutex vmu;
-	static uint32_t next = VmBase;
 	std::lock_guard<std::mutex> l(vmu);
-	uint32_t sz = (size + 0xffff) & ~0xffffu;   // allocation granularity
-	uint32_t a = next;
-	if (a + sz > VmEnd) return 0;
-	next += sz;
+	uint32_t sz = (size + 0xffff) & ~0xffffu;
+	if (!sz) return 0;
+	for (auto it = vmFree.begin(); it != vmFree.end(); ++it)
+		if (it->second >= sz)
+		{
+			uint32_t a = it->first, rest = it->second - sz;
+			vmFree.erase(it);
+			if (rest) vmFree[a + sz] = rest;
+			memset(guest::host(a), 0, sz);
+			vmLive[a] = sz; vmLiveBytes += sz;
+			return a;
+		}
+	uint32_t a = vmNext;
+	if ((uint64_t)a + sz > VmEnd)
+	{
+		static int n = 0;
+		if (n++ < 5) log("VirtualAlloc: %u bytes refused - region full (live %llu MiB in %zu blocks, %zu free ranges)", size, (unsigned long long)(vmLiveBytes >> 20), vmLive.size(), vmFree.size());
+		return 0;
+	}
 	if (!guest::commit(a, sz)) return 0;
+	vmNext += sz;
+	vmLive[a] = sz; vmLiveBytes += sz;
 	return a;
+}
+bool vmRelease(uint32_t addr)
+{
+	std::lock_guard<std::mutex> l(vmu);
+	auto it = vmLive.find(addr);
+	if (it == vmLive.end()) return false;
+	uint32_t a = it->first, sz = it->second;
+	vmLive.erase(it); vmLiveBytes -= sz;
+	auto nx = vmFree.lower_bound(a);
+	if (nx != vmFree.end() && nx->first == a + sz) { sz += nx->second; vmFree.erase(nx); }
+	auto pv = vmFree.lower_bound(a);
+	if (pv != vmFree.begin()) { --pv; if (pv->first + pv->second == a) { pv->second += sz; return true; } }
+	vmFree[a] = sz;
+	return true;
 }
 }

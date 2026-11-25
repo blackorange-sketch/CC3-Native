@@ -484,7 +484,7 @@ IMP_STD(K, VirtualAlloc, 4)
 	if (addr && addr >= VmBase && addr < VmEnd && size && !(type & 0x2000)) { SET(addr); return; }
 	SET(vmAlloc(size));
 }
-IMP_STD(K, VirtualFree, 3) { SET(1); }
+IMP_STD(K, VirtualFree, 3) { if (ARG(2) & 0x8000) vmRelease(ARG(0)); SET(1); }
 IMP_STD(K, VirtualQuery, 3)
 {
 	uint32_t p = ARG(0), out = ARG(1);

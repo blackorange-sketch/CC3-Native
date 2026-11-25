@@ -1081,6 +1081,40 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 
 struct DeclElem { uint16_t stream, offset; uint8_t type, method, usage, index; };
 
+// a flexible vertex format (SetFVF) as the vertex declaration it stands for (stream 0)
+static uint32_t fvfElements(uint32_t fvf, DeclElem* out)
+{
+	uint32_t n = 0, off = 0;
+	auto add = [&](uint8_t type, uint8_t usage, uint8_t index, uint32_t bytes) { out[n++] = DeclElem{0, (uint16_t)off, type, 0, usage, index}; off += bytes; };
+	uint32_t pos = fvf & 0x400e;
+	if (pos == 0x4002) add(3, 0, 0, 16);                      // XYZW
+	else if (pos == 0x004) add(3, 0, 0, 16);                  // XYZRHW (pre-transformed; the game's vertex shader reads it as a position)
+	else if (pos)
+	{
+		add(2, 0, 0, 12);
+		int beta = pos == 0x2 ? 0 : (int)(pos - 0x4) / 2;   // XYZB1..XYZB5
+		if (beta > 0)
+		{
+			bool lastIdx = (fvf & 0x1000) || (fvf & 0x8000);
+			int w = lastIdx ? beta - 1 : beta;
+			if (w > 0) add((uint8_t)(w - 1), 1, 0, 4 * w);
+			if (lastIdx) add((fvf & 0x8000) ? 4 : 5, 2, 0, 4);   // D3DCOLOR / UBYTE4 blend indices
+		}
+	}
+	if (fvf & 0x10) add(2, 3, 0, 12);
+	if (fvf & 0x20) add(0, 4, 0, 4);
+	if (fvf & 0x40) add(4, 10, 0, 4);
+	if (fvf & 0x80) add(4, 10, 1, 4);
+	uint32_t tc = (fvf >> 8) & 15;
+	for (uint32_t i = 0; i < tc && i < 8; i++)
+	{
+		uint32_t f = (fvf >> (16 + 2 * i)) & 3;
+		uint32_t comps = f == 0 ? 2 : f == 1 ? 3 : f == 2 ? 4 : 1;
+		add((uint8_t)(comps - 1), 5, (uint8_t)i, 4 * comps);
+	}
+	return n;
+}
+
 bool attribFormat(uint8_t type, GLint& size, GLenum& gtype, bool& norm)
 {
 	switch (type)
@@ -1809,7 +1843,7 @@ static void batchSig(const DrawCall& dc, BatchSig& g)
 // can this draw start a merged draw: its World register, else -1
 static int batchEligible(const DrawCall& dc)
 {
-	if (!batchOn() || dc.upVerts || !dc.indexed || !dev.ib || (dev.ib->usage & 0x200) || dev.rs[27] || !dev.vs || !dev.ps) return -1;
+	if (!batchOn() || dc.upVerts || !dc.indexed || !dev.ib || !dev.vdecl || (dev.ib->usage & 0x200) || dev.rs[27] || !dev.vs || !dev.ps) return -1;
 	for (int i = 0; i < 16; i++)
 	{
 		const Stream& st = dev.streams[i];
@@ -2337,9 +2371,10 @@ static void drawImpl(const DrawCall& dc)
 	}
 	else
 	{
+		nEls = fvfElements(dev.fvf, elsBuf);
 		static int ff = 0;
-		if (ff++ < 3) log("d3d9: draw with FVF %x and no declaration - not supported yet", dev.fvf);
-		return;
+		if (ff++ < 3) log("d3d9: draw with FVF %x -> %u vertex elements", dev.fvf, nEls);
+		if (!nEls) return;
 	}
 	{
 		// interface scaling (HUD panels in the corners)
