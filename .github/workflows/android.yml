@@ -92,7 +92,7 @@ jobs:
           # CC3_GATES=addr:pop[:eax]: calls the runtime may skip through game_gate: 44ed42 = resolution list mode check,
           # 747837 = texture size to power of two (hangs on huge sizes), 813b2e = grid set-up (logged only);
           # CC3_HOOKS (logged after the call): 56d658 = chunk stream on a file, 827a88 = height map parse
-          CC3_GATES=44ed42:0:1,747837:0:0,813b2e:12:0 CC3_HOOKS=56d658,827a88 ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -60
+          CC3_GATES=44ed42:0:1,747837:0:0,813b2e:12:0 CC3_HOOKS=56d658,827a88,56d6ce,56f9ac,838217 ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -60
 
       # Import coverage: every import of the binary should have a host implementation (or a deliberate stub)
       - name: Import coverage

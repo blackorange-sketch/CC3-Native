@@ -596,6 +596,27 @@ void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2,
 			}
 		}
 	}
+	else if (fn == gb::ChunkOpen)
+	{
+		static int n = 0;
+		if (n++ < 40)
+		{
+			uint32_t as = c->r[EAX], str = as ? guest::load<uint32_t>(as) : 0;
+			std::string nm;
+			if (str && readableGuest(str, 1)) for (int k = 0; k < 64; k++) { uint8_t ch = guest::load<uint8_t>(str + k); if (!ch) break; nm += (char)(ch >= 0x20 && ch < 0x7f ? ch : '?'); }
+			rt::log("hook: chunk open '%s' version %u (stream %08x)", nm.c_str(), a1 ? (unsigned)guest::load<uint16_t>(a1) : 0u, ecx);
+		}
+	}
+	else if (fn == gb::ChunkParseLoop)
+	{
+		static int n = 0;
+		if (n++ < 20) rt::log("hook: chunk parse loop on %08x -> %u", ecx, c->r[EAX] & 0xff);
+	}
+	else if (fn == gb::HeightMapDataParse)
+	{
+		static int n = 0;
+		if (n++ < 6) rt::log("hook: HeightMapData parsed into %08x: %d x %d border %d -> %u", ecx, (int32_t)guest::load<uint32_t>(ecx + 0x14), (int32_t)guest::load<uint32_t>(ecx + 0x18), (int32_t)guest::load<uint32_t>(ecx + 0x1c), c->r[EAX] & 0xff);
+	}
 	else if (fn == gb::HeightMapParse && ecx)
 	{
 		nl++;
