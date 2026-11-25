@@ -345,7 +345,7 @@ H("IDirect3D9::GetAdapterIdentifier")
 	uint32_t p = ARG(3);
 	memset(guest::host(p), 0, 1104);
 	putStr(p, "nvd3dum.dll");
-	putStr(p + 512, "Android GPU (RA3 native D3D9 layer)");
+	putStr(p + 512, "Android GPU (CC3 native D3D9 layer)");
 	putStr(p + 1024, "\\\\.\\DISPLAY1");
 	guest::store<uint64_t>(p + 1056, 0x0009000a00000000ull | 0x1000);
 	guest::store<uint32_t>(p + 1064, 0x10DE);
@@ -363,7 +363,7 @@ static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
 	if (!list.empty() && w == sw && h == sh) return list;
 	sw = w; sh = h;
 	// Wide screen off: 16:9 steps (the game's list accepts standard aspect ratios only). On: the screen's own shape
-	// only (the list check is let through for those, see ra3_gate)
+	// only (the list check is let through for those, see game_gate)
 	list.clear();
 	if (!rt::config.wideScreen || w < 640 || h < 480 || (double)w / h <= 16.0 / 9.0 + 0.05) list = {{1280, 720}, {1600, 900}, {1920, 1080}, {2048, 1152}, {2240, 1260}, {2560, 1440}};
 	else

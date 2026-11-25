@@ -9,7 +9,7 @@
 //    the render thread has executed everything queued before, then gets the result. They are rare
 //    (resource creation, first use of a program).
 //
-// Create /sdcard/ra3_st to run single-threaded (every call goes straight to the driver, as before).
+// Create /sdcard/cc3_st to run single-threaded (every call goes straight to the driver, as before).
 #pragma once
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>

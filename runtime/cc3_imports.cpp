@@ -49,14 +49,14 @@ struct tm getTm(uint32_t a)
 // "C" locale classification of a byte (MSVC: EOF and 0..255 are valid, the rest is undefined -> false)
 bool byteOk(uint32_t ch) { return (int)ch >= 0 && (int)ch < 256; }
 
-// Windows path made absolute against the game's working directory C:\RA3, separators normalised, "." and ".." folded
+// Windows path made absolute against the game's working directory C:\CC3, separators normalised, "." and ".." folded
 std::string fullWinPath(const std::string& in)
 {
 	std::string p = in;
 	std::replace(p.begin(), p.end(), '/', '\\');
 	if (p.size() >= 2 && p[1] == ':') {}
 	else if (!p.empty() && p[0] == '\\') p = "C:" + p;
-	else p = "C:\\RA3\\" + p;
+	else p = "C:\\CC3\\" + p;
 	std::vector<std::string> parts;
 	size_t b = 3;
 	while (b <= p.size())

@@ -1,6 +1,5 @@
 #include "game_build.h"
 #include <chrono>
-namespace rt { extern bool gFps60; }
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
 #include <unistd.h>
 #include <set>
@@ -124,11 +123,11 @@ struct PRef
 	const FxType* ty = nullptr;
 	bool valid() const { return p != nullptr; }
 };
-// /sdcard/ra3_fxsafe: every effect shortcut off (reference cache, unchanged-constant skip, pre-shader and shader
+// /sdcard/cc3_fxsafe: every effect shortcut off (reference cache, unchanged-constant skip, pre-shader and shader
 // pick reuse, per-stage lookups, state path cache) - to find which one leaves UI elements at wrong places
 static bool fxSafe()
 {
-	static const bool on = [] { bool v = access("/sdcard/ra3_fxsafe", F_OK) == 0; rt::log("fx: shortcuts %s", v ? "OFF (ra3_fxsafe)" : "on"); return v; }();
+	static const bool on = [] { bool v = access("/sdcard/cc3_fxsafe", F_OK) == 0; rt::log("fx: shortcuts %s", v ? "OFF (cc3_fxsafe)" : "on"); return v; }();
 	return on;
 }
 PRef refOf(Obj* o, uint32_t h)
@@ -473,7 +472,7 @@ H("ID3DXEffect::GetParameterDesc")
 // 60 fps diagnostics: how the game's shader clock 'Time' advances against wall time and presented frames, and who sets it
 static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 {
-	if (!verbose() || !r.valid() || r.p->name != "Time") return;   // only with ra3_verbose
+	if (!verbose() || !r.valid() || r.p->name != "Time") return;   // only with cc3_verbose
 	static int n = 0;
 	static uint64_t lastUs = 0;
 	uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -487,7 +486,7 @@ static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 		uint32_t w = guest::load<uint32_t>(c->r[ESP] + 4 * k);
 		if (w >= 0x401000 && w < 0xa80000) { char b[12]; snprintf(b, sizeof b, " %08x", w); ra += b; found++; }
 	}
-	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, callers%s", how, f, us / 1e6, glr::frameNo(), ::rt::gFps60 ? 1 : 0, ra.c_str());
+	log("fxtime: %s Time=%.4f at %.3f s, frame %u, callers%s", how, f, us / 1e6, glr::frameNo(), ra.c_str());
 }
 static void noteViewProj(const std::string& name, const float* m, const char* how);
 H("ID3DXEffect::SetValue")
@@ -524,7 +523,7 @@ H("ID3DXEffect::SetFloat")
 		uint32_t v = ARG(2);
 		writeVals(r, &v, 1, 3);
 		noteTime(c, r, &v, "SetFloat");
-		static bool diag = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+		static bool diag = access("/sdcard/cc3_fxdiag", F_OK) == 0;
 		static int n = 0;
 		if (diag && n < 20 && r.p->name == "Time") { n++; float f; memcpy(&f, &v, 4); log("FXTIME SetFloat Time=%g", f); }
 	}
@@ -750,8 +749,8 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	uint32_t maxF = isVs ? 256 : 224;
 	// only the registers the shader's constant table assigns: the compiler drops unused rows (World float4x4 used
 	// as 2 registers), and the next constant (Shroud) lives right behind them
-	// /sdcard/ra3_fullpack: old behaviour (whole parameter, may spill into the following registers) for A/B checks
-	static const bool fullPack = access("/sdcard/ra3_fullpack", F_OK) == 0;
+	// /sdcard/cc3_fullpack: old behaviour (whole parameter, may spill into the following registers) for A/B checks
+	static const bool fullPack = access("/sdcard/cc3_fullpack", F_OK) == 0;
 	uint32_t n = fullPack ? 4096u : std::max(1u, c.regCount);
 	if (c.regSet == 2)
 	{
@@ -760,15 +759,15 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 		// registers that still hold this version of this parameter (packed at this place) are not repacked: most
 		// commits change a few parameters, and repacking all of them every time was the biggest cost of a draw
 		RegTag* tags = isVs ? gTagV : gTagP;
-		static const bool noSkip = access("/sdcard/ra3_nopackskip", F_OK) == 0;   // A/B check: repack every time
-		static const bool noSkipLogged = (log("fx: unchanged constants %s", noSkip ? "repacked every time (ra3_nopackskip)" : "skipped"), true);
+		static const bool noSkip = access("/sdcard/cc3_nopackskip", F_OK) == 0;   // A/B check: repack every time
+		static const bool noSkipLogged = (log("fx: unchanged constants %s", noSkip ? "repacked every time (cc3_nopackskip)" : "skipped"), true);
 		(void)noSkipLogged;
 		bool same = !fullPack && !noSkip;
 		for (uint32_t r = c.regIndex; same && r < end; r++) same = tags[r].p == &p && tags[r].ver == p.ver && tags[r].at == c.regIndex;
-		// /sdcard/ra3_packcheck: a skipped parameter is packed anyway and compared with what the registers hold;
+		// /sdcard/cc3_packcheck: a skipped parameter is packed anyway and compared with what the registers hold;
 		// differences are logged (and repaired) - finds what else changes registers or values behind the tags
-		static const bool check = access("/sdcard/ra3_packcheck", F_OK) == 0;
-		static const bool checkLogged = (log("fx: stale constants check %s", check ? "ON (ra3_packcheck)" : "off"), true);
+		static const bool check = access("/sdcard/cc3_packcheck", F_OK) == 0;
+		static const bool checkLogged = (log("fx: stale constants check %s", check ? "ON (cc3_packcheck)" : "off"), true);
 		(void)checkLogged;
 		if (same && check)
 		{
@@ -1026,7 +1025,7 @@ void fxApplyPass(Obj* o)
 			static thread_local std::vector<double> in;
 			static thread_local std::vector<uint32_t> regs;
 			// inputs unchanged since the last run (no parameter it reads was written): outputs are still valid
-			bool same = pc.valid && !::rt::gFps60 && verSame(*fx, pc.pidx, pc.inVer);
+			bool same = pc.valid && verSame(*fx, pc.pidx, pc.inVer);
 			if (!same) verTake(*fx, pc.pidx, pc.inVer);
 			if (!same) in.assign(prog.nIn, 0.0);
 			for (size_t ci2 = 0; !same && ci2 < prog.ctab.size(); ci2++)
@@ -1042,15 +1041,6 @@ void fxApplyPass(Obj* o)
 				regs.assign(nd, 0);
 				fxrt::packToRegs(pp.ty, pp.val.data(), pp.val.size(), 2, 0, regs.data(), (uint32_t)(nd / 4));
 				for (size_t i = 0; i < nd; i++) { float f; memcpy(&f, &regs[i], 4); dst[i] = f; }
-				// GPU particles: the shader turns Time into a frame clock with a fixed 30 (frames per second) while the
-				// game stamps each particle's birth with the frame clock of the current cap. Above 30 fps the clocks
-				// drift apart (particles born "in the future", effects stretched or overbright): scale Time to match.
-				if (::rt::gFps60 && gb::FpsCap && c.name == "Time")
-				{
-					if (fx->gpuParticle < 0) fx->gpuParticle = fxrt::findParam(*fx, "Physics") >= 0 && fxrt::findParam(*fx, "Update") >= 0 ? 1 : 0;
-					uint32_t cap = guest::load<uint32_t>(gb::FpsCap);
-					if (fx->gpuParticle == 1 && cap > 30 && cap <= 240) dst[0] *= cap / 30.0;
-				}
 			}
 			if (!same && (!pc.valid || pc.in != in))
 			{
@@ -1071,7 +1061,7 @@ void fxApplyPass(Obj* o)
 			}
 			static int npl = 0;
 			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs", okp ? "ok" : "FAILED", po.f.size(), po.b.size()); }
-			static bool presDiag = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+			static bool presDiag = access("/sdcard/cc3_fxdiag", F_OK) == 0;
 			static int npd = 0;
 			if (presDiag && npd < 40 && okp)
 			{
@@ -1238,5 +1228,5 @@ namespace d3d
 int gFxDiagCur = -1;
 uint32_t gFxDiagTech = 0;
 uint32_t gFxDiagBlob = 0;
-bool fxStatOn() { static const bool on = access("/sdcard/ra3_fxstat", F_OK) == 0; return on; }
+bool fxStatOn() { static const bool on = access("/sdcard/cc3_fxstat", F_OK) == 0; return on; }
 }

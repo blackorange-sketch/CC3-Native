@@ -7,7 +7,7 @@ namespace rt
 {
 namespace
 {
-uint32_t watchAddr = getenv("RA3_WATCH") ? (uint32_t)strtoul(getenv("RA3_WATCH"), nullptr, 16) : 0;
+uint32_t watchAddr = getenv("CC3_WATCH") ? (uint32_t)strtoul(getenv("CC3_WATCH"), nullptr, 16) : 0;
 void watchLog(const char* what, uint32_t p, uint32_t sz)
 {
 	CPU* c = thisThread().cpu;

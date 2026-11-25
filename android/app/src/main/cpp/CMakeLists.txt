@@ -18,7 +18,7 @@ function(game_library name lifted)
   file(GLOB src ${lifted}/lifted_*.cpp)
   add_library(${name} SHARED ${RUNTIME_SRC} ${src})
   target_include_directories(${name} PRIVATE ${GLUE} ${RT} ${lifted})
-  # RA3_TRACE (per-call ring trace for crash reports) is off for speed; fatal faults print a host frame walk instead.
+  # CC3_TRACE (per-call ring trace for crash reports) is off for speed; fatal faults print a host frame walk instead.
   # Android 10+: native ELF TLS (emulated TLS cost ~1.5% of the game thread in the profile)
   target_compile_options(${name} PRIVATE -O2 -fno-strict-aliasing -w -fno-emulated-tls)
   target_link_libraries(${name} android log EGL GLESv3 aaudio)

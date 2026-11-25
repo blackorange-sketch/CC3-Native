@@ -83,7 +83,7 @@ bool load(const char* path, Image& img, std::string& err)
 			std::string name = (t & 0x80000000) ? "#" + std::to_string(t & 0xffff)
 				: std::string(reinterpret_cast<const char*>(guest::host(img.base + t + 2)));
 			uint32_t stub = imports::bind(dll, name);
-			if (name == "tolower") ra3_stub_tolower = stub;
+			if (name == "tolower") stub_tolower = stub;
 			guest::store<uint32_t>(img.base + first + i * 4, stub);
 			img.importCount++;
 		}

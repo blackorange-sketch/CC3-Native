@@ -209,20 +209,6 @@ int launch(const std::string& gameFile)
 	static CPU cpu;
 	spawnMainThread(&cpu);
 	{
-		// 60 fps experiment: raise the game's client frame-rate cap (30) before any game code runs, so the
-		// values the game derives from it at start-up are consistent. Logic keeps its own 15 Hz constant.
-		extern bool gFps60;
-		extern bool gFps60b;
-		gFps60 = access("/sdcard/ra3_fps60", F_OK) == 0 || rt::config.fps60;
-		gFps60b = !gFps60 && access("/sdcard/ra3_fps60b", F_OK) == 0;
-		if (gFps60b) log("fps60b: keeping the 30 fps cap, frame wait shortened to 60 fps");
-		if (gFps60 && gb::FpsCap && guest::load<uint32_t>(gb::FpsCap) == 30 && guest::load<uint32_t>(gb::LogicHz) == 15)
-		{
-			// experiment: /sdcard/ra3_fps45 -> 45 (3 frames per logic frame instead of 4)
-			uint32_t cap = access("/sdcard/ra3_fps45", F_OK) == 0 ? 45 : 60;
-			guest::store<uint32_t>(gb::FpsCap, cap);
-			log("fps60: client frame-rate cap raised to %u (logic stays at 15 Hz)%s", cap, access("/sdcard/ra3_fpsnopin", F_OK) == 0 ? ", frames per logic frame not pinned" : "");
-		}
 	}
 	callGuest(&cpu, imageEntry, {});
 	log("entry returned, eax=%08x", cpu.r[EAX]);

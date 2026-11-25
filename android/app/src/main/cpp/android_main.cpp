@@ -359,7 +359,7 @@ void draw(ANativeWindow* w)
 ANativeWindow* window = nullptr;
 
 
-// Wide screen (launcher option): RA3 widens its view (Hor+) for any resolution set in a profile's Options.ini, but its
+// Wide screen (launcher option): SAGE games widen their view (Hor+) for any resolution set in a profile's Options.ini, but the
 // menu only offers standard aspect ratios. Each start, the Resolution of every profile is set to the screen's aspect
 // ratio minus the button columns (same height); with the option off a wide value goes back to 16:9.
 static void patchProfileResolutions()
@@ -562,7 +562,6 @@ void android_main(android_app* app)
 			else if (k == "skudef" && !v.empty() && v.find_first_of("/\\\"") == std::string::npos) rt::config.skuDef = v;
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
-			else if (k == "fps60") rt::config.fps60 = v == "1";
 			else if (k == "fast_shaders") rt::config.fastShaders = v == "1";
 			else if (k == "wide_screen") rt::config.wideScreen = v == "1";
 			else if (k == "button_size") { int pc = atoi(v.c_str()); if (pc >= 50 && pc <= 300) rt::config.buttonSize = pc; }

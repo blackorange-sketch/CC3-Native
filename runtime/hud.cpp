@@ -12,7 +12,7 @@
 
 namespace
 {
-const char* kCfg = "/sdcard/ra3_buttons.cfg";
+const char* kCfg = "/sdcard/cc3_buttons.cfg";
 
 struct Btn { std::string label; int vk; bool ctrl; int side; float fx = -1.f, fy = -1.f; };   // side 0 = left, 1 = right; fx, fy: moved by hand (centre, share of the screen)
 struct R { int x, y, w, h; };

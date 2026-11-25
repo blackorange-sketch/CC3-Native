@@ -33,7 +33,7 @@
 
 #include "gfx.h"
 #include "glrec.h"
-namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
+namespace rt { uint64_t limiterCpuUs(); }
 namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
 using namespace rt;
@@ -236,7 +236,7 @@ GLenum targetOf(const Obj* o) { return o->iface == ICube ? GL_TEXTURE_CUBE_MAP :
 // ---- ETC2 transcoding (GPUs without S3TC): DXT is decoded and re-encoded to ETC2 once, then read from a disk cache
 // (<app data>/texcache, one file per texture keyed by its contents). ETC2 is supported by every GLES 3 GPU and needs
 // a quarter (RGB) or half (RGBA) of the memory of the decoded RGB565/RGBA8 textures used before.
-// /sdcard/ra3_noetc: decode only (the previous behaviour); /sdcard/ra3_nos3tc: take this path on S3TC GPUs too (tests).
+// /sdcard/cc3_noetc: decode only (the previous behaviour); /sdcard/cc3_nos3tc: take this path on S3TC GPUs too (tests).
 static std::string gTexDir;
 static uint64_t hashBytes(const uint8_t* p, size_t n, uint64_t h)
 {
@@ -280,15 +280,15 @@ static void uploadTextureImpl(Obj* o)
 	GLenum target = targetOf(o);
 	glBindTexture(target, o->glTex); gTexBindDirty = true;
 	// GPUs without S3TC (Mali, PowerVR): DXT is decoded on the CPU. Opaque DXT1 becomes RGB565 (half the memory of RGBA8),
-	// and textures of 512 px and up start at their second mip level (a quarter of the memory) unless /sdcard/ra3_fulltex exists
+	// and textures of 512 px and up start at their second mip level (a quarter of the memory) unless /sdcard/cc3_fulltex exists
 	bool soft = tf.compressed && !gHasS3tc;
 	bool to565 = false;
 	uint32_t skip = 0;
 	if (soft)
 	{
 		tf.compressed = false; tf.convert = true;
-		static const bool fullTex = access("/sdcard/ra3_fulltex", F_OK) == 0;
-		static const bool noEtc0 = access("/sdcard/ra3_noetc", F_OK) == 0;
+		static const bool fullTex = access("/sdcard/cc3_fulltex", F_OK) == 0;
+		static const bool noEtc0 = access("/sdcard/cc3_noetc", F_OK) == 0;
 		// ETC2 at full resolution takes the same memory as the decoded textures at half resolution did, so only the
 		// decode fallback halves large textures
 		bool etc = !noEtc0 && o->data && o->iface != IVolume && !gTexDir.empty();
@@ -316,7 +316,7 @@ static void uploadTextureImpl(Obj* o)
 		static int nl = 0;
 		if (nl++ < 8) log("GL: no S3TC: decoding %ux%u DXT%c texture on the CPU (%s, from level %u)", o->w, o->h, (char)(o->fmt >> 24), to565 ? "RGB565" : "RGBA8", skip);
 	}
-	static const bool noEtc = access("/sdcard/ra3_noetc", F_OK) == 0;
+	static const bool noEtc = access("/sdcard/cc3_noetc", F_OK) == 0;
 	if (soft && !noEtc && o->data && o->iface != IVolume && !gTexDir.empty())
 	{
 		bool alpha = !to565;
@@ -1137,7 +1137,7 @@ bool init()
 	gInit = true;
 	if (!gfx::ready() || !gfx::ownedByGame()) { log("GL: no context for the game thread - drawing disabled"); return false; }
 	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
-	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc") && access("/sdcard/ra3_nos3tc", F_OK) != 0;
+	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc") && access("/sdcard/cc3_nos3tc", F_OK) != 0;
 	gTexDir = rt::config.dataRoot + "/texcache";
 	mkdir(gTexDir.c_str(), 0755);
 	if (!gHasS3tc)
@@ -1229,7 +1229,7 @@ bool ensureGl()
 {
 	if (!gInit)
 	{
-		rec::gOn = access("/sdcard/ra3_st", F_OK) != 0;
+		rec::gOn = access("/sdcard/cc3_st", F_OK) != 0;
 		if (rec::gOn)
 		{
 			// a dedicated render thread owns the context; game threads only record commands
@@ -1251,16 +1251,16 @@ bool ensureGl()
 }
 bool ready() { return gOk; }
 
-// Frame trace (create /sdcard/ra3_frame): log every clear, copy and draw of frames 3600 and 5400.
+// Frame trace (create /sdcard/cc3_frame): log every clear, copy and draw of frames 3600 and 5400.
 static bool traceFrame()
 {
-	static bool on = access("/sdcard/ra3_frame", F_OK) == 0;
+	static bool on = access("/sdcard/cc3_frame", F_OK) == 0;
 	return on && (gFrameNo == 3600 || gFrameNo == 5400);
 }
-// with /sdcard/ra3_dump present: save the target after every copy and full-screen pass of frame 5400
+// with /sdcard/cc3_dump present: save the target after every copy and full-screen pass of frame 5400
 static bool traceDump()
 {
-	static bool on = access("/sdcard/ra3_dump", F_OK) == 0;
+	static bool on = access("/sdcard/cc3_dump", F_OK) == 0;
 	return on && gFrameNo == 5400 && traceFrame();
 }
 static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc);
@@ -1268,7 +1268,7 @@ static void dumpTraced(const char* what, uint32_t w, uint32_t h)
 {
 	static uint32_t seq = 0;
 	if (seq >= 40) return;
-	char path[128]; snprintf(path, sizeof path, "/sdcard/ra3_dump/tr%02u_%s_%ux%u.bmp", seq++, what, w, h);
+	char path[128]; snprintf(path, sizeof path, "/sdcard/cc3_dump/tr%02u_%s_%ux%u.bmp", seq++, what, w, h);
 	dumpBmp(path, w, h, w > 1024 ? 2 : 1);
 }
 static std::string objTag(Obj* o)
@@ -1748,7 +1748,7 @@ void draw(const DrawCall& dc)
 // matrix (three registers) become one instanced draw: the first draw is recorded as an instanced draw whose
 // instance list stays open, and following identical draws only add their World rows to it - as long as nothing
 // else was recorded in between (rec::mark). Opaque, indexed draws from static buffers only.
-// /sdcard/ra3_nobatch turns it off.
+// /sdcard/cc3_nobatch turns it off.
 struct InstData { uint32_t count = 0; float rows[64][12]; };
 struct BatchSig
 {
@@ -1775,7 +1775,7 @@ static uint64_t gBatchDraws, gBatchMerged, gBatchFrame0;
 static bool batchOn()
 {
 	static const bool on = [] {
-		if (access("/sdcard/ra3_nobatch", F_OK) == 0) { log("batch: draw merging off (ra3_nobatch)"); return false; }
+		if (access("/sdcard/cc3_nobatch", F_OK) == 0) { log("batch: draw merging off (cc3_nobatch)"); return false; }
 		log("batch: draw merging on");
 		return true;
 	}();
@@ -1849,13 +1849,13 @@ static bool batchAppend(const DrawCall& dc)
 	return true;
 }
 
-// /sdcard/ra3_batchstat: how many draws could be merged. Each draw is compared with the one before it:
+// /sdcard/cc3_batchstat: how many draws could be merged. Each draw is compared with the one before it:
 //   same  - same mesh, shaders, textures and states: only shader constants differ (one instanced draw could do both)
 //   mat   - same shaders, textures and states, another mesh (needs merged buffers / multi-draw)
 // For "same" pairs: how many vertex / pixel shader registers differ (what each instance would need of its own).
 static void batchStat(const DrawCall& dc)
 {
-	static const bool on = access("/sdcard/ra3_batchstat", F_OK) == 0;
+	static const bool on = access("/sdcard/cc3_batchstat", F_OK) == 0;
 	if (!on) return;
 	struct Key
 	{
@@ -2040,7 +2040,7 @@ static void drawImpl(const DrawCall& dc)
 		static int logged = 0;
 		uint32_t bl = (dev.rs[27] ? 1u : 0u) | (dev.rs[19] & 15) << 4 | (dev.rs[20] & 15) << 8;
 		gDiagPair = false;
-		static bool diagOn = verbose() && access("/sdcard/ra3_diag", F_OK) == 0;
+		static bool diagOn = verbose() && access("/sdcard/cc3_diag", F_OK) == 0;
 		if (diagOn && gFrameNo >= 3000 && logged < 120)
 		{
 			int& n = seen[{vs->hash, ps->hash, bl}];
@@ -2059,12 +2059,12 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	{
-		// Effects diagnostics (create /sdcard/ra3_fxdiag): describe the first draws of every alpha-blended
+		// Effects diagnostics (create /sdcard/cc3_fxdiag): describe the first draws of every alpha-blended
 		// shader pair during gameplay - state, textures, vertex layout, raw vertices and constants.
-		static bool fxOn = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+		static bool fxOn = access("/sdcard/cc3_fxdiag", F_OK) == 0;
 		static std::map<std::tuple<uint64_t, uint64_t, uint32_t>, int> fxSeen;
 		static int fxLogged = 0, fxSrc = 0;
-		// with /sdcard/ra3_fxstat: the first draws of the laser effect (laser.fxo, blob 11012 bytes)
+		// with /sdcard/cc3_fxstat: the first draws of the laser effect (laser.fxo, blob 11012 bytes)
 		static int laserLogged = 0;
 		bool laserDiag = fxStatOn() && gFxDiagBlob == 11012 && gFrameNo >= 1500 && laserLogged < 6;
 		if (laserDiag) fxSeen.erase({vs->hash, ps->hash, (dev.rs[19] & 15) | (dev.rs[20] & 15) << 4 | (dc.upVerts ? 256u : 0u)}), laserLogged++;
@@ -2261,8 +2261,8 @@ static void drawImpl(const DrawCall& dc)
 			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
 	}
 	{
-		// /sdcard/ra3_nocache: re-send all GL state every draw (to rule the state caches in or out)
-		static const bool noCache = access("/sdcard/ra3_nocache", F_OK) == 0;
+		// /sdcard/cc3_nocache: re-send all GL state every draw (to rule the state caches in or out)
+		static const bool noCache = access("/sdcard/cc3_nocache", F_OK) == 0;
 		if (noCache) invalidateGlState();
 	}
 	bindTargets();
@@ -2562,7 +2562,7 @@ static void drawImpl(const DrawCall& dc)
 	if (verbose() && (gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600) && !dev.rt0)
 	{
 		uint32_t dn = gDrawsThisFrame;
-		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f" + std::to_string(gFrameNo) + "_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
+		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/cc3_f" + std::to_string(gFrameNo) + "_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
 	}
 }
 
@@ -2572,7 +2572,6 @@ void present()
 {
 	rt::waitWhileBackground();   // app in the background: hold the game here (game logic, timers and audio stop)
 	uint64_t t0 = nowUs();
-	rt::fpsPinTick();
 	presentImpl();
 	gTPresent += nowUs() - t0;
 	static uint64_t start = 0; static uint32_t f0 = 0;
@@ -2799,8 +2798,8 @@ static void presentImpl()
 		{
 			static int diagFrames = 0;
 			bool inGame = gUiWorldDraws >= 50;
-			// /sdcard/ra3_uidiag: a frame every 1.5 s (40 in all), to catch a tooltip held open
-			static const bool uiDiagFlag = access("/sdcard/ra3_uidiag", F_OK) == 0;
+			// /sdcard/cc3_uidiag: a frame every 1.5 s (40 in all), to catch a tooltip held open
+			static const bool uiDiagFlag = access("/sdcard/cc3_uidiag", F_OK) == 0;
 			gUiDiag = inGame && gUiScale > 1.001f && (uiDiagFlag ? diagFrames < 40 && gFrameNo % 45 == 0 : diagFrames < 3 && gFrameNo % 900 == 0 && verbose());
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
@@ -2831,54 +2830,6 @@ static void presentImpl()
 		gUpBytes = gUpFull = gUpSub = 0;
 		log("perf: 300 frames in %llu ms; per draw us: prog %llu state %llu uni %llu samp %llu attr %llu draw %llu (n %llu)", (unsigned long long)((n - last) / 1000), (unsigned long long)(tProg / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tState / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tUni / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tSamp / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tAttr / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tDraw / std::max<uint64_t>(1, nDraw)), (unsigned long long)nDraw);
 		last = n; tProg = tState = tUni = tSamp = tAttr = tDraw = nDraw = 0;
-	}
-	if (gFrameNo == 200)
-	{
-		// experiment: /sdcard/ra3_lod containing a digit 0..3 forces the static LOD level (and the detected 'ideal' level)
-		if (FILE* f = fopen("/sdcard/ra3_lod", "r"))
-		{
-			int d = -1; if (fscanf(f, "%d", &d) != 1) d = -1; fclose(f);
-			uint32_t gm = gb::LODManager ? guest::load<uint32_t>(gb::LODManager) : 0;
-			if (gm && d >= 0 && d <= 5)
-			{
-				log("LOD: forcing static level %d (was %d, ideal %d)", d, (int)guest::load<uint32_t>(gm + 0x2dc), (int)guest::load<uint32_t>(gm + 0x340));
-				// apply the preset through the game's own function (0x61d660 = GameLODManager::applyStaticLOD(level)), preserving the guest registers
-				if (CPU* cc = rt::thisThread().cpu)
-				{
-					uint32_t sv[8]; memcpy(sv, cc->r, sizeof sv);
-					cc->r[ECX] = gm;
-					rt::callGuest(cc, gb::ApplyStaticLOD, {(uint32_t)d});
-					memcpy(cc->r, sv, sizeof sv);
-					log("LOD: applied preset %d via 0x61d660", d);
-				}
-				guest::store<uint32_t>(gm + 0x2dc, (uint32_t)d);
-				guest::store<uint32_t>(gm + 0x340, (uint32_t)d);
-			}
-		}
-	}
-	if (gb::kLodDiag && (gFrameNo == 900 || gFrameNo == 1800 || gFrameNo == 3600 || gFrameNo == 5400))
-	{
-		uint32_t gm = guest::load<uint32_t>(gb::LODManager);
-		log("LOD: manager %08x; hw: cpu %u/%u/%u mem %08x%08x vid %u %u", gm, guest::load<uint32_t>(0xcf00b8), guest::load<uint32_t>(0xcf046c), guest::load<uint32_t>(0xcefa60), guest::load<uint32_t>(0xcee5d4), guest::load<uint32_t>(0xcee5d0), guest::load<uint32_t>(0xcf0414), guest::load<uint32_t>(0xce2fa8));
-		log("LOD: cpulib flag %02x tscfreq %08x%08x cf009c %x cee3a8 %x cee3ac %x", guest::load<uint8_t>(0xcf0423), guest::load<uint32_t>(0xcf0094), guest::load<uint32_t>(0xcf0090), guest::load<uint32_t>(0xcf009c), guest::load<uint32_t>(0xcee3a8), guest::load<uint32_t>(0xcee3ac));
-		if (gm && gFrameNo == 1800)
-		{
-			auto str = [](uint32_t a) -> std::string { if (a < 0x400000 || a >= 0x30000000) return ""; std::string r; for (int i = 0; i < 40; i++) { char ch = (char)guest::load<uint8_t>(a + i); if (!ch) break; if (ch < 32 || ch > 126) return ""; r += ch; } return r.size() >= 3 ? r : ""; };
-			std::string raw; char b[16];
-			for (uint32_t o = 0; o < 0x2d8; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); raw += b; }
-			log("LODRAW: %s", raw.c_str());
-			auto dumpObj = [&](const char* tag, uint32_t p) {
-				if (p < 0x1000000 || p >= 0x30000000) return;
-				std::string l; for (uint32_t o = 0; o < 0x40; o += 4) { uint32_t v = guest::load<uint32_t>(p + o); snprintf(b, sizeof b, "%x ", v); l += b; std::string t = str(v); if (!t.empty()) l += "'" + t + "' "; }
-				log("LODOBJ %s %08x: %s", tag, p, l.c_str());
-			};
-			for (uint32_t i = 0; i < 4; i++) dumpObj(("a24[" + std::to_string(i) + "]").c_str(), guest::load<uint32_t>(gm + 0x24 + i * 4));
-			for (uint32_t i = 0; i < 6; i++) dumpObj(("a3c[" + std::to_string(i) + "]").c_str(), guest::load<uint32_t>(gm + 0x3c + i * 4));
-			for (uint32_t i = 0; i < 2; i++) dumpObj(("a54[" + std::to_string(i) + "]").c_str(), guest::load<uint32_t>(gm + 0x54 + i * 4));
-			for (uint32_t i = 0; i < 5; i++) { uint32_t n = guest::load<uint32_t>(gm + 0x32c + i * 4); log("LODLIST idx %u count %u", i, n); for (uint32_t k = 1; k <= n && k <= 8; k++) dumpObj(("list" + std::to_string(i) + "." + std::to_string(k)).c_str(), guest::load<uint32_t>(gm + 0x58 + ((i * 32 + k) * 4))); }
-			for (uint32_t i = 0; i < 4; i++) dumpObj(("a5c[" + std::to_string(i) + "]").c_str(), guest::load<uint32_t>(gm + 0x5c + i * 128));
-		}
-		if (gm) { std::string line; char b[16]; for (uint32_t o = 0x2d8; o < 0x364; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); line += b; } log("LOD: %s", line.c_str()); }
 	}
 	if (gFrameNo % 300 == 0) rt::profDump();
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }

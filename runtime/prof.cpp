@@ -1,4 +1,4 @@
-// Sampling profiler for the game's main thread (enabled by /sdcard/ra3_prof).
+// Sampling profiler for the game's main thread (enabled by /sdcard/cc3_prof).
 // A per-thread CPU-time timer sends SIGPROF; the handler records the interrupted host pc. A background thread
 // resolves the samples to symbols (lifted functions are exported as f_<guest address>) every 30 s and logs the
 // hottest functions.
@@ -35,7 +35,7 @@ std::atomic<uint32_t> head{0};
 // other game threads (worker threads): pc + guest thread id, reported separately
 constexpr uint32_t N2 = 1u << 16;
 uintptr_t samples2[N2];
-uintptr_t ours2[N2];              // render thread: first return address inside libra3native.so (who called the driver)
+uintptr_t ours2[N2];              // render thread: first return address inside libcc3native.so (who called the driver)
 uint32_t tags2[N2];
 constexpr uint32_t kRenderTag = 1;   // the GL render thread (glrec.cpp)
 uintptr_t rStackLo = 0, rStackHi = 0, soLo = 0, soHi = 0;
@@ -108,7 +108,7 @@ std::string nameOf(uintptr_t pc, std::unordered_map<uintptr_t, std::string>& cac
 			if (n.compare(0, 2, "_Z") == 0 && f != std::string::npos && f < 6) n = n.substr(f, 10);
 		}
 		else { char b[96]; snprintf(b, sizeof b, "%s+0x%zx", base, (size_t)(pc - (uintptr_t)di.dli_fbase) & ~(size_t)0xfff); n = b; }
-		if (strcmp(base, "libra3native.so") != 0) n = std::string(base) + ":" + n;
+		if (strcmp(base, "libcc3native.so") != 0) n = std::string(base) + ":" + n;
 	}
 	else n = "?";
 	cache[pc] = n;
@@ -198,15 +198,15 @@ void reporter()
 			if ((i + 1) % 4 == 0) { rt::log("prof libc from:%s", line.c_str()); line.clear(); }
 		}
 		if (!line.empty()) rt::log("prof libc from:%s", line.c_str());
-		// exact offsets of the hottest samples in libra3native.so code without a dynamic symbol (static functions):
-		// resolved offline with the symbol list published next to the APK (ra3native-symbols.txt)
+		// exact offsets of the hottest samples in libcc3native.so code without a dynamic symbol (static functions):
+		// resolved offline with the symbol list published next to the APK (cc3native-symbols.txt)
 		std::unordered_map<uintptr_t, uint32_t> perOff;
 		Dl_info self{};
 		if (dladdr((void*)&reporter, &self) && self.dli_fbase)
 			for (auto& kv : perPc)
 			{
 				const std::string& nm = nameOf(kv.first, cache);
-				if (nm.compare(0, 16, "libra3native.so+") == 0) perOff[kv.first - (uintptr_t)self.dli_fbase] += kv.second;
+				if (nm.compare(0, 16, "libcc3native.so+") == 0) perOff[kv.first - (uintptr_t)self.dli_fbase] += kv.second;
 			}
 		std::vector<std::pair<uint32_t, uintptr_t>> vo;
 		for (auto& kv : perOff) vo.push_back({kv.second, kv.first});
@@ -280,7 +280,7 @@ void reporter()
 bool enabledNow()
 {
 	static bool on = [] {
-		if (access("/sdcard/ra3_prof", F_OK) != 0) return false;
+		if (access("/sdcard/cc3_prof", F_OK) != 0) return false;
 		struct sigaction sa{};
 		sa.sa_sigaction = onProf;
 		sa.sa_flags = SA_SIGINFO | SA_RESTART;

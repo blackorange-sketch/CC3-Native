@@ -181,7 +181,6 @@ void threadMain(ThreadObj* t)
 	traceRegister(t->tid);
 	cpu.fsbase = tctx.teb;
 	cpu.r[ESP] = top - 16;
-	if (t->fn == gb::ThreadWrap1 || t->fn == gb::ThreadWrap2) log("thread %u starts: wrapper %08x real fn %08x arg %08x", t->tid, t->fn, guest::load<uint32_t>(t->arg + 0x10), guest::load<uint32_t>(t->arg + 0x14));
 	uint32_t r = callGuestRet(&cpu, t->fn, {t->arg}, 4);
 	std::lock_guard<std::mutex> l(waitMu);
 	t->exitCode = r;
@@ -307,52 +306,8 @@ IMP_STD(K, GetPriorityClass, 1) { SET(0x20); }
 IMP_STD(K, SetThreadIdealProcessor, 2) { SET(0); }
 IMP_STD(K, SetProcessAffinityMask, 2) { SET(1); }
 IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); guest::store<uint32_t>(ARG(2), 0xff); SET(1); }
-// Temporary diagnostics for the frame limiter: who makes the main thread wait, and for how long.
-// 60 fps experiment (/sdcard/ra3_fps60): the game's frame limiter (0x6297e0..0x629877, GameEngine update) waits
-// until 1000 / (15 * k) ms have passed, k = render frames per logic frame (logic runs at 15 Hz). It only ever
-// lowers k when frames are slow and never raises it above the start value, so when the limiter is actually
-// waiting (spare time), step k up towards cap / 15.
-namespace rt { bool gFps60 = false, gFps60b = false; }
-using rt::gFps60b;
-using rt::gFps60;
-static std::atomic<uint64_t> gLimWait{0}, gLimWaitTotal{0}, gLimCpu{0};
-static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
-namespace rt { uint64_t limiterCpuUs() { return gLimCpu.exchange(0); } uint64_t limiterWaitUs() { return gLimWait.exchange(0); } uint64_t limiterWaitTotalUs() { return gLimWaitTotal.load(); } }
-static void limiterHeadroom(CPU* c)
-{
-	if (!gb::LimiterRet || guest::load<uint32_t>(c->r[ESP] + 12) != gb::LimiterRet) return;
-	{
-		// time spent in the limiter's wait loop: spans between consecutive calls belong to one wait
-		static uint64_t prev = 0, prevCpu = 0;
-		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-		timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-		uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
-		if (prev && t - prev < 3000) { gLimWait += t - prev; gLimWaitTotal += t - prev; gLimCpu += cpu - prevCpu; }
-		prev = t; prevCpu = cpu;
-	}
-	uint32_t obj = c->r[EDI];
-	if (obj > 0x400000 && obj < 0x30000000) gLimObj = obj;
-}
-// Called once per presented frame. In 60 fps mode the game expects cap / 15 render frames per logic frame
-// everywhere (interpolation, construction animation, terrain updates), but its limiter drops that number when a
-// frame is slow. Keep it at cap / 15: a slow frame then just runs the game a little slower instead.
-namespace rt
-{
-void fpsPinTick()
-{
-	if (!(gFps60 || gFps60b) || !gLimObj) return;
-	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
-	if (noPin) return;
-	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
-	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(gb::FpsCap) / std::max(1u, guest::load<uint32_t>(gb::LogicHz));
-
-	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
-	if (k == want || k == 0 || k > 16) return;
-	static int n = 0;
-	if (n++ < 20 && !gFps60b) log("fps60: game lowered render frames per logic frame to %u, restored %u", k, want);
-	guest::store<uint32_t>(gLimObj + 0x17c, want);
-}
-}
+// Frame limiter statistics for the perf overlay: they need the game's limiter return address (not known for CC3 yet)
+namespace rt { uint64_t limiterCpuUs() { return 0; } uint64_t limiterWaitUs() { return 0; } uint64_t limiterWaitTotalUs() { return 0; } }
 static void noteWait(CPU* c, const char* what, uint32_t ms)
 {
 	if (thisThread().tid != 4096 || !verbose()) return;
@@ -379,11 +334,8 @@ IMP_STD(K, SleepEx, 2)
 {
 	uint32_t ms = ARG(0);
 	noteWait(c, "SleepEx", ms);
-	limiterHeadroom(c);
-	// the frame limiter spins on SleepEx(0) + timeGetTime until the frame time is reached: 1 ms naps there save power
-	bool limiter = gb::LimiterRet && guest::load<uint32_t>(c->r[ESP] + 12) == gb::LimiterRet;
 	if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-	else std::this_thread::sleep_for(std::chrono::microseconds(limiter ? 1000 : 100));
+	else std::this_thread::sleep_for(std::chrono::microseconds(100));
 	SET(0);
 }
 
@@ -687,7 +639,7 @@ IMP_STD(K, GetLogicalDrives, 0) { SET(1 << 2); }
 IMP_STD(K, GetWindowsDirectoryW, 2) { SET(putWStr(ARG(0), u"C:\\Windows")); }
 IMP_STD(K, GetTempPathA, 2) { SET(putStr(ARG(1), "C:\\Temp\\")); }
 IMP_STD(K, GetTempFileNameA, 4) { static int n; SET(putStr(ARG(3), gstr(ARG(0)) + "\\tmp" + std::to_string(++n) + ".tmp")); }
-IMP_STD(K, GetCurrentDirectoryA, 2) { SET(putStr(ARG(1), "C:\\RA3")); }
+IMP_STD(K, GetCurrentDirectoryA, 2) { SET(putStr(ARG(1), "C:\\CC3")); }
 IMP_STD(K, SetCurrentDirectoryW, 1) { SET(1); }
 IMP_STD(K, GetLocaleInfoA, 4) { SET(putStr(ARG(2), "1") + 1); }
 IMP_STD(K, GetLocaleInfoW, 4) { SET(putWStr(ARG(2), u"1") + 1); }
@@ -808,13 +760,13 @@ static void scanBig(int fd, const std::string& name)
 				log("   csf: %d APT:Gfx* labels", found);
 			}
 		}
-		if (ln.find("optionssettings") != std::string::npos && sz < (8u << 20) && access("/sdcard/ra3_dump", F_OK) == 0)
+		if (ln.find("optionssettings") != std::string::npos && sz < (8u << 20) && access("/sdcard/cc3_dump", F_OK) == 0)
 		{
 			// debug aid: extract the options-screen UI files so they can be inspected offline
 			std::string base = ln.substr(ln.find_last_of("\\/") + 1);
 			std::vector<uint8_t> buf(sz);
 			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
-				if (FILE* o = fopen(("/sdcard/ra3_dump/" + base).c_str(), "wb")) { fwrite(buf.data(), 1, sz, o); fclose(o); log("big %s: dumped %s (%u bytes)", name.c_str(), base.c_str(), sz); }
+				if (FILE* o = fopen(("/sdcard/cc3_dump/" + base).c_str(), "wb")) { fwrite(buf.data(), 1, sz, o); fclose(o); log("big %s: dumped %s (%u bytes)", name.c_str(), base.c_str(), sz); }
 		}
 		if ((ln.find("manifest") != std::string::npos || ln.find(".version") != std::string::npos) && shown++ < 12)
 			log("big %s: [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
@@ -828,7 +780,7 @@ static bool isMovieFile(const std::string& p)
 {
 	std::string l;
 	for (char ch : p) l += ch == '\\' ? '/' : (char)tolower((unsigned char)ch);
-	if (getenv("RA3_PLAY_MOVIES") || access("/sdcard/ra3_play_movies", F_OK) == 0 || rt::config.playMovies) return false;   // launcher setting (or the flag file)
+	if (getenv("CC3_PLAY_MOVIES") || access("/sdcard/cc3_play_movies", F_OK) == 0 || rt::config.playMovies) return false;   // launcher setting (or the flag file)
 	return l.find("/movies/") != std::string::npos && (l.size() > 4 && (l.compare(l.size() - 4, 4, ".vp6") == 0 || l.compare(l.size() - 4, 4, ".snd") == 0));
 }
 static FileObj* fileOf(uint32_t h) { return (FileObj*)getHandle(h, KFile); }
@@ -856,7 +808,7 @@ static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32
 	struct stat st;
 	bool isDir = stat(hp.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 	int fd = isDir ? -1 : open(hp.c_str(), flags, 0666);
-	if (fd < 0 && !isDir) { if (getenv("RA3_RINGDUMP") && winPath.find("audio.manifest") != std::string::npos) traceDump();
+	if (fd < 0 && !isDir) { if (getenv("CC3_RINGDUMP") && winPath.find("audio.manifest") != std::string::npos) traceDump();
 	if (!(flags & O_CREAT)) log("open failed: '%s' -> '%s' (errno %d)", winPath.c_str(), hp.c_str(), errno); setLastError(errno == ENOENT ? 2 : errno == EEXIST ? 80 : 5); SET(0xffffffff); return; }
 	setLastError(disp == 4 && fd >= 0 && st.st_size > 0 ? 183 : 0);
 	{

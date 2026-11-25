@@ -5,7 +5,7 @@
 
 namespace guest
 {
-#ifdef RA3_LIFTED_TU
+#ifdef CC3_LIFTED_TU
 // Generated code sees the base as constant (it is set once in init(), before any guest code runs). Otherwise every
 // guest store, a store through uint8_t* that may alias anything, forced a reload of the base pointer before the
 // next guest access: one extra dependent load per memory operation in the whole game.

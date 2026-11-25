@@ -77,7 +77,7 @@ jobs:
           g++ -O2 -std=c++17 -Icapstone/include tools/lift.cpp tools/lift_pe.cpp capstone/b/libcapstone.a -o lift_pe
           ./analyze game/cnc3game.dat game/cc3 | tee analyze.txt | head -40
           mkdir -p lifted
-          # no RA3_GATES / RA3_HOOKS for CC3 yet (runtime/game_build.h has no game addresses)
+          # no CC3_GATES / CC3_HOOKS for CC3 yet (runtime/game_build.h has no game addresses)
           ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -20
 
       # Import coverage: every import of the binary should have a host implementation (or a deliberate stub)
@@ -98,8 +98,8 @@ jobs:
 
       - name: Stamp build id
         run: |
-          echo '#define RA3_BUILD_ID "${{ github.sha }}"' > runtime/build_id.h
-          echo "#define RA3_VERSION \"$APP_VERSION\"" >> runtime/build_id.h
+          echo '#define CC3_BUILD_ID "${{ github.sha }}"' > runtime/build_id.h
+          echo "#define CC3_VERSION \"$APP_VERSION\"" >> runtime/build_id.h
       - name: Build APK
         working-directory: android
         env:
@@ -113,7 +113,7 @@ jobs:
           gradle assembleDebug -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted -PgameSha256=$GAME_SHA256 $CC_OPT --no-daemon
           command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
-      # Symbols of the runtime (static functions have no dynamic symbol): the profiler (/sdcard/ra3_prof) logs raw
+      # Symbols of the runtime (static functions have no dynamic symbol): the profiler (/sdcard/cc3_prof) logs raw
       # offsets that are resolved with this list. Lifted game functions (f_<address>) are left out, they are exported.
       - name: Runtime symbol list
         run: |

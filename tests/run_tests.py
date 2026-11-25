@@ -6,7 +6,7 @@ Each snippet is assembled with nasm, run natively as a 32-bit program, lifted to
 import itertools, os, struct, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/ra3-tests"
+OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/cc3-tests"
 CAP = os.environ.get("CAPSTONE", "")          # capstone source dir (with b/libcapstone.a)
 os.makedirs(OUT, exist_ok=True)
 

@@ -1,4 +1,4 @@
-// analyze: static survey of a 32-bit PE (the RA3 game binary) for recompilation planning.
+// analyze: static survey of a 32-bit PE (the game binary) for recompilation planning.
 // Finds functions by recursive descent, counts hard cases (jump tables, indirect calls, privileged
 // or exotic instructions) and writes a function list. Reads the user's own binary; writes no game data.
 #include <capstone/capstone.h>

@@ -20,13 +20,12 @@ namespace rt
 // ---- configuration
 struct Config
 {
-	std::string gameRoot = "/sdcard/CC3";   // host directory holding the game (what the guest sees as C:\RA3)
+	std::string gameRoot = "/sdcard/CC3";   // host directory holding the game (what the guest sees as C:\CC3)
 	std::string dataRoot = "/tmp/cc3-data";  // writable area for everything else (saves, options, logs)
 	std::string logFile;
 	// launcher settings (<app data>/launcher.cfg); the /sdcard flag files still override them
 	std::string language = "russian";   // CNC3_<language>_1.9.SkuDef
 	bool playMovies = true;              // cutscenes and videos
-	bool fps60 = false;                  // experimental 60 fps cap
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
 	bool fastShaders = false;
 	int buttonSize = 100;                // launcher: on-screen hotkey button size, percent
@@ -37,12 +36,12 @@ struct Config
 	bool wideScreen = false;             // launcher: game picture as wide as the screen allows (Options.ini resolution patched)            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
 };
 std::string commandLine();               // the game's command line (language config)
-std::string modulePath();                // C:\RA3\RetailExe\<version>\cnc3game.dat
+std::string modulePath();                // C:\CC3\RetailExe\<version>\cnc3game.dat
 extern Config config;
 
 extern void (*logHook)(const char*);   // optional extra sink (on-screen console, logcat)
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
-bool verbose();                 // extra diagnostics: enabled by creating /sdcard/ra3_verbose
+bool verbose();                 // extra diagnostics: enabled by creating /sdcard/cc3_verbose
 uint64_t heapLiveBytes();
 uint64_t limiterWaitUs();
 uint64_t limiterWaitTotalUs();   // monotonic
@@ -55,7 +54,6 @@ void audioPause(bool pause);
 // interface scaling: a touch on an enlarged HUD panel is mapped back to where the game drew that panel (back buffer pixels)
 void uiUnmap(int& x, int& y);
 void perfHintFrame(uint64_t workNs, int renderTid);   // Android performance hint session (ADPF)
-void fpsPinTick();          // time the game spent in its frame limiter since the last call
 void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative ReadFile totals
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

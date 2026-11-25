@@ -78,7 +78,7 @@ void publishLocked()   // producer lock held
 	pubSeq++;
 }
 
-// /sdcard/ra3_prof: wall time of every recorded command, by command type (its run function), logged every 30 s.
+// /sdcard/cc3_prof: wall time of every recorded command, by command type (its run function), logged every 30 s.
 // The render thread mostly WAITS inside the driver (busy ~9 ms per frame for ~2.5 ms of CPU), which CPU sampling
 // cannot see; this shows which GL calls block.
 inline uint64_t nsNow() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec; }
@@ -136,7 +136,7 @@ void renderLoop()
 		}
 		uint64_t t0 = nowUs();
 		size_t off = 0;
-		static const bool timed = access("/sdcard/ra3_prof", F_OK) == 0;
+		static const bool timed = access("/sdcard/cc3_prof", F_OK) == 0;
 		if (!timed)
 			while (off < c->used)
 			{
@@ -235,11 +235,11 @@ void start(void (*threadInit)())
 {
 	std::thread([threadInit] {
 		gRenderThread = pthread_self();
-		pthread_setname_np(pthread_self(), "ra3-render");
+		pthread_setname_np(pthread_self(), "cc3-render");
 		setpriority(PRIO_PROCESS, 0, -10);
 		gRenderTid = (int)syscall(SYS_gettid);
 		rt::log("GL: render thread tid %d", gRenderTid.load());
-		::profThread(1);   // sampled with /sdcard/ra3_prof (prof.cpp: tag 1 is the render thread)
+		::profThread(1);   // sampled with /sdcard/cc3_prof (prof.cpp: tag 1 is the render thread)
 		threadInit();
 		renderLoop();
 	}).detach();

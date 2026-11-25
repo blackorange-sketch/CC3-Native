@@ -58,7 +58,7 @@ void call_target_ic(CPU* c, uint32_t guestAddr, std::atomic<uint64_t>* ic);
 #define S32(a, v) (::guest::store<uint32_t>((a), (uint32_t)(v)))
 
 extern uint32_t g_eflags_hi;
-extern uint32_t ra3_stub_tolower;   // guest stub address of MSVCR80!tolower (indirect calls to it are inlined)   // EFLAGS.ID / AC, which software toggles to probe for CPUID
+extern uint32_t stub_tolower;   // guest stub address of MSVCR80!tolower (indirect calls to it are inlined)   // EFLAGS.ID / AC, which software toggles to probe for CPUID
 static inline uint8_t par8(uint32_t v) { return (uint8_t)(!__builtin_parity(v & 0xff)); }
 
 #include <time.h>
