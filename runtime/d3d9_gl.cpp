@@ -45,6 +45,7 @@ using namespace rt;
 #endif
 
 void profStart();
+void profNotePresent();
 
 namespace d3d
 {
@@ -2786,6 +2787,7 @@ static void presentImpl()
 	else { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
+	profNotePresent();
 	if (gFrameNo == 1)
 	{
 		// The game thread that draws (the busiest one) goes to the fast cores, with a higher priority; the other threads

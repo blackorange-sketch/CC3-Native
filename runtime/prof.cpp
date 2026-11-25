@@ -115,13 +115,26 @@ std::string nameOf(uintptr_t pc, std::unordered_map<uintptr_t, std::string>& cac
 	return n;
 }
 
+void reportRound(std::unordered_map<uintptr_t, std::string>& cache, uint32_t& tail);
 void reporter()
 {
 	std::unordered_map<uintptr_t, std::string> cache;
 	uint32_t tail = 0;
-	for (int round = 0;; round++)
+	for (;;)
 	{
 		std::this_thread::sleep_for(std::chrono::seconds(30));
+		reportRound(cache, tail);
+	}
+}
+void reportOnce()
+{
+	static std::unordered_map<uintptr_t, std::string> cache;
+	static uint32_t tail = 0;
+	reportRound(cache, tail);
+}
+void reportRound(std::unordered_map<uintptr_t, std::string>& cache, uint32_t& tail)
+{
+	{
 		uint32_t h = head.load();
 		uint32_t n = h - tail;
 		if (n > N) { tail = h - N; n = N; }
@@ -159,7 +172,7 @@ void reporter()
 			}
 		}
 		tail = h;
-		if (!n) continue;
+		if (!n) return;
 		std::unordered_map<std::string, uint32_t> perFn;
 		for (auto& kv : perPc) perFn[nameOf(kv.first, cache)] += kv.second;
 		std::vector<std::pair<uint32_t, std::string>> v;
@@ -430,8 +443,56 @@ static void threadMonitor()
 
 void profThread(uint32_t guestTid) { prof::startWorker(guestTid); }   // a game worker thread (after profStart)
 
+// Stall sampler: when no frame has been presented for 25 s while the app is in the foreground (a hang during
+// loading, an endless loop), the main thread is sampled for 20 s - also without /sdcard/cc3_prof - and the report
+// names the lifted functions it is stuck in.
+std::atomic<uint32_t> gPresentCount{0};
+void profNotePresent() { gPresentCount.fetch_add(1, std::memory_order_relaxed); }
+static void stallWatch(pid_t mainTid)
+{
+	uint32_t last = gPresentCount.load();
+	int quiet = 0, rounds = 0;
+	for (;;)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		uint32_t now = gPresentCount.load();
+		if (now != last || ::rt::background()) { last = now; quiet = 0; continue; }
+		quiet += 5;
+		if (quiet < 25 || rounds >= 3) continue;
+		rounds++;
+		rt::log("stall: no frame for %d s (%u presented) - sampling the main thread for 20 s", quiet, now);
+		auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (std::chrono::steady_clock::now() < end && gPresentCount.load() == now)
+		{
+			syscall(SYS_tgkill, getpid(), mainTid, SIGPROF);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		prof::reportOnce();
+		quiet = 0;
+		last = gPresentCount.load();
+	}
+}
+
 void profStart()
 {
 	prof::startForThisThread();
 	if (!::rt::config.logFile.empty()) std::thread(threadMonitor).detach();
+	if (!prof::gEnabled)
+	{
+		// handler and stack bounds for the stall sampler (no timer: nothing runs until a stall)
+		pthread_attr_t at;
+		if (pthread_getattr_np(pthread_self(), &at) == 0)
+		{
+			void* a; size_t sz;
+			if (pthread_attr_getstack(&at, &a, &sz) == 0) { prof::stackLo = (uintptr_t)a; prof::stackHi = (uintptr_t)a + sz; }
+			pthread_attr_destroy(&at);
+		}
+		struct sigaction sa{};
+		sa.sa_sigaction = prof::onProf;
+		sa.sa_flags = SA_SIGINFO | SA_RESTART;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGPROF, &sa, nullptr);
+		pid_t tid = (pid_t)syscall(SYS_gettid);
+		std::thread(stallWatch, tid).detach();
+	}
 }
