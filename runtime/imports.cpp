@@ -71,4 +71,22 @@ Entry* lookup(uint32_t a)
 }
 
 const std::vector<Entry>& all() { return entries(); }
+
+bool knownDll(const std::string& dll)
+{
+	std::string k = key(dll, "");
+	auto it = registry().lower_bound(k);
+	return it != registry().end() && it->first.compare(0, k.size(), k) == 0;
+}
+uint32_t bindKnown(const std::string& dll, const std::string& name)
+{
+	static std::mutex mu;
+	static std::map<std::string, uint32_t> cache;
+	std::lock_guard<std::mutex> l(mu);
+	auto c = cache.find(key(dll, name));
+	if (c != cache.end()) return c->second;
+	auto it = registry().find(key(dll, name));
+	uint32_t stub = it == registry().end() ? 0 : addDynamic(dll, name, it->second.fn, it->second.pop, 0);
+	return cache[key(dll, name)] = stub;
+}
 }

@@ -15,6 +15,7 @@
 
 #include "fastlock.h"
 #include "rt.h"
+#include "steam.h"
 
 #define K "KERNEL32.dll"
 using namespace rt;
@@ -632,9 +633,59 @@ IMP_STD(K, GetEnvironmentVariableA, 3) { SET(0); setLastError(203); }
 IMP_STD(K, SetEnvironmentVariableA, 2) { SET(1); }
 IMP_STD(K, GetComputerNameA, 2) { putStr(ARG(0), "ANDROID"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
 IMP_ID("ADVAPI32.dll", "GetUserNameA", GetUserNameA, 8) { putStr(ARG(0), "player"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
-IMP_STD(K, LoadLibraryA, 1) { std::string n = gstr(ARG(0)); log("LoadLibraryA(%s)", n.c_str()); SET(0); setLastError(126); }
+// Run-time loaded DLLs: steam_api.dll (Steam build, delay-loaded: the stand-in of steam.cpp) and any DLL the runtime
+// implements (CC3 loads d3d9.dll this way): a module handle per DLL, GetProcAddress hands out its registered exports.
+namespace
+{
+std::mutex modMu;
+std::vector<std::string> modules;   // handle = kModBase + 0x10000 * index
+constexpr uint32_t kModBase = 0x6e000000;
+std::string dllName(std::string n)
+{
+	for (auto& ch : n) ch = (char)tolower((unsigned char)ch);
+	size_t s = n.find_last_of("\\/");
+	if (s != std::string::npos) n = n.substr(s + 1);
+	if (n.find('.') == std::string::npos) n += ".dll";
+	return n;
+}
+uint32_t loadModule(const std::string& raw)
+{
+	if (uint32_t m = steam::loadLibrary(raw)) return m;
+	std::string n = dllName(raw);
+	if (!imports::knownDll(n)) return 0;
+	std::lock_guard<std::mutex> l(modMu);
+	for (size_t i = 0; i < modules.size(); i++) if (modules[i] == n) return kModBase + 0x10000u * (uint32_t)i;
+	modules.push_back(n);
+	return kModBase + 0x10000u * (uint32_t)(modules.size() - 1);
+}
+}
+IMP_STD(K, LoadLibraryA, 1)
+{
+	std::string n = gstr(ARG(0));
+	uint32_t m = loadModule(n);
+	log("LoadLibraryA(%s) -> %08x", n.c_str(), m);
+	if (m) { SET(m); return; }
+	SET(0); setLastError(126);
+}
 IMP_STD(K, FreeLibrary, 1) { SET(1); }
-IMP_STD(K, GetProcAddress, 2) { SET(0); setLastError(127); }
+IMP_STD(K, GetProcAddress, 2)
+{
+	std::string name = ARG(1) >= 0x10000 ? gstr(ARG(1)) : "#" + std::to_string(ARG(1));
+	if (ARG(1) >= 0x10000)
+		if (uint32_t f = steam::procAddress(ARG(0), name)) { SET(f); return; }
+	std::string dll;
+	{
+		std::lock_guard<std::mutex> l(modMu);
+		uint32_t i = (ARG(0) - kModBase) / 0x10000u;
+		if (ARG(0) >= kModBase && (ARG(0) - kModBase) % 0x10000u == 0 && i < modules.size()) dll = modules[i];
+	}
+	if (ARG(0) == 0x7ff00000) dll = "kernel32.dll";
+	uint32_t f = dll.empty() ? 0 : imports::bindKnown(dll, name);
+	static int n = 0;
+	if (n++ < 60) log("GetProcAddress(%08x %s, %s) -> %08x", ARG(0), dll.c_str(), name.c_str(), f);
+	if (f) { SET(f); return; }
+	SET(0); setLastError(127);
+}
 IMP_STD(K, GetLogicalDrives, 0) { SET(1 << 2); }
 IMP_STD(K, GetWindowsDirectoryW, 2) { SET(putWStr(ARG(0), u"C:\\Windows")); }
 IMP_STD(K, GetTempPathA, 2) { SET(putStr(ARG(1), "C:\\Temp\\")); }

@@ -20,6 +20,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include "pe_loader.h"
+#include "steam.h"
 
 void dumpWaiters();
 namespace rt
@@ -205,6 +206,21 @@ int launch(const std::string& gameFile)
 	for (auto& sec : img.sections) imageSections.push_back({img.base + sec.va, sec.vsize});
 	tls = {img.tlsStart, img.tlsEnd, img.tlsZeroFill, 0};
 	log("loaded %s, entry %08x, %u imports", gameFile.c_str(), imageEntry, img.importCount);
+
+	// Steam build: it checks steam_appid.txt (the Steam launcher writes it) against the app id Steam reports -
+	// without it "Unable to verify game installation". Next to the game file and in the game root.
+	for (const std::string& dir : {config.gameRoot, config.gameRoot + "/RetailExe/" + config.gameVersion})
+	{
+		std::string f = dir + "/steam_appid.txt";
+		if (access(f.c_str(), F_OK) != 0)
+			if (FILE* o = fopen(f.c_str(), "w")) { fprintf(o, "%u", steam::kAppId); fclose(o); log("steam: wrote %s", f.c_str()); }
+	}
+	// its Workshop folder under the Steam folder (misc.cpp registry): Workshop maps and mods go there, none for now
+	{
+		std::string w = hostPath(std::string(steam::kSteamDir) + "\\steamapps\\workshop\\content\\" + std::to_string(steam::kAppId));
+		for (size_t i = 1; i <= w.size(); i++)
+			if (i == w.size() || w[i] == '/') mkdir(w.substr(0, i).c_str(), 0777);
+	}
 
 	static CPU cpu;
 	spawnMainThread(&cpu);

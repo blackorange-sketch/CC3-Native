@@ -18,6 +18,7 @@ no Winlator, no emulator at run time. Controls are made for a phone touch screen
 | Binary analysis — Steam `cnc3game.dat` has no SecuROM | ✅ |
 | Recompiler, runtime and launcher in place, APK builds in CI | ✅ |
 | All 557 imports of the game have a host implementation | ✅ |
+| Runs without Steam (stand-in `steam_api.dll`, Steam store check, `steam_appid.txt`) | ✅ untested |
 | Game reaches D3D init / first frames | ⏳ |
 | DirectInput8 keyboard / mouse | ⬜ stub |
 | UI text (GDI fonts) | ⬜ stub — menus have no text yet |
@@ -70,6 +71,11 @@ cnc3game.dat ──analyze──► function list ──lift_pe──► C++ per
   imports the runtime provides.
 - `runtime/` — loader, CPU state, KERNEL32 / USER32 / CRT / WinSock, DirectSound → AAudio, D3D9 + D3DX effects →
   OpenGL ES. Game-specific settings: `game_build.h`; CC3-only imports: `cc3_imports.cpp`.
+- **No Steam on the phone:** the Steam build delay-loads `steam_api.dll` and refuses to start without Steam. The
+  runtime answers in its place (`runtime/steam.cpp`): Steam is running, the game is owned, every Steamworks interface
+  is a fake object whose methods return "nothing" (method tables generated from the Steamworks SDK headers by
+  `tools/steam_gen.py` in CI). It also answers the game's one Steam store request, reports a Steam folder in the
+  registry and writes `steam_appid.txt` (24790) into the game folder.
 - `android/` — the launcher (Java) and the native glue (`android_main.cpp`: window, input, HUD buttons).
 - `tests/` — differential tests of the lifter against the real x86 CPU.
 

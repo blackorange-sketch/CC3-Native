@@ -38,5 +38,9 @@ uint32_t bind(const std::string& dll, const std::string& name);
 // Creates a stub at run time (COM vtable methods); returns its guest address.
 uint32_t addDynamic(const std::string& dll, const std::string& name, HostFn fn, int pop, uint32_t user);   // returns stub address
 Entry* lookup(uint32_t stubAddr);
+// Run-time loading (LoadLibrary / GetProcAddress): does the runtime implement anything of this DLL, and the stub of
+// one export if it is implemented (0 if not).
+bool knownDll(const std::string& dll);
+uint32_t bindKnown(const std::string& dll, const std::string& name);
 const std::vector<Entry>& all();
 }

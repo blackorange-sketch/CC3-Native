@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 
 #include "rt.h"
+#include "steam.h"
 
 extern const unsigned lifted_count;
 
@@ -382,6 +383,9 @@ std::string hostPath(const std::string& win)
 	// everything under CC3/ is the game folder; the rest is our writable area
 	std::string lp = lowerStr(p);
 	if (lp == "cc3" || lp.rfind("cc3/", 0) == 0) return resolveCI(config.gameRoot, p.size() > 4 ? p.substr(4) : "");
+	// the Steam build sees the game folder inside the Steam library (steam.cpp GetAppInstallDir)
+	static const std::string lib = steam::kLibraryPath;
+	if (lp == lib || lp.rfind(lib + "/", 0) == 0) return resolveCI(config.gameRoot, p.size() > lib.size() + 1 ? p.substr(lib.size() + 1) : "");
 	return resolveCI(config.dataRoot, p);
 }
 }

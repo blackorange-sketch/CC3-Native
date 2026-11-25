@@ -1,6 +1,6 @@
 // Imports C&C 3 needs on top of what the RA3 runtime already had (docs/GAP_VS_RA3.md):
 // MSVCR80 / KERNEL32 / USER32 / ole32 / OLEAUT32 / SHLWAPI functions, D3DX math, and bring-up stubs for
-// GDI32 (text drawing, real rendering comes later), DINPUT8 and WININET.
+// GDI32 (text drawing, real rendering comes later) and DINPUT8, and WININET (the Steam store check).
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -9,6 +9,7 @@
 #include <ctime>
 #include <cwctype>
 #include <fcntl.h>
+#include <map>
 #include <mutex>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,6 +17,7 @@
 #include "fpu.h"
 #include "input.h"
 #include "rt.h"
+#include "steam.h"
 
 using namespace rt;
 
@@ -403,17 +405,132 @@ IMP_ID(DINPUT, "DirectInput8Create", DirectInput8Create, 20)
 	SET(0x80004005);   // E_FAIL
 }
 
-// ======================= WININET (online features are off: every request fails as "no connection")
-namespace { constexpr uint32_t kNoInternet = 12007; }   // ERROR_INTERNET_NAME_NOT_RESOLVED
-IMP_ID(INET, "InternetOpenA", InternetOpenA, 20) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "InternetConnectA", InternetConnectA, 32) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "InternetCrackUrlA", InternetCrackUrlA, 16) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "HttpOpenRequestA", HttpOpenRequestA, 32) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "HttpAddRequestHeadersA", HttpAddRequestHeadersA, 16) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "HttpSendRequestA", HttpSendRequestA, 20) { setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "InternetQueryDataAvailable", InternetQueryDataAvailable, 16) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "InternetReadFile", InternetReadFile, 16) { if (ARG(3)) guest::store<uint32_t>(ARG(3), 0); setLastError(kNoInternet); SET(0); }
-IMP_ID(INET, "InternetCloseHandle", InternetCloseHandle, 4) { SET(1); }
+// ======================= WININET
+// No internet for the game (its online services are gone). The Steam build asks the Steam store for its own entry
+// at start (store.steampowered.com/api/appdetails?appids=24790) and stops without it, so that one request is answered
+// here as the store would; every other request fails to connect.
+namespace
+{
+constexpr uint32_t kNoInternet = 12007;   // ERROR_INTERNET_NAME_NOT_RESOLVED
+struct WebReq { std::string host, path, body; size_t at = 0; bool sent = false; };
+std::mutex webMu;
+std::map<uint32_t, WebReq> web;   // handle -> internet session, connection or request
+uint32_t webNext = 0x1ee70000;
+std::string storeAnswer(const std::string& host, const std::string& path)
+{
+	std::string h = host;
+	for (auto& ch : h) ch = (char)tolower((unsigned char)ch);
+	if (h != "store.steampowered.com" || path.find("/api/appdetails") == std::string::npos) return std::string();
+	size_t q = path.find("appids=");
+	std::string id = q == std::string::npos ? std::to_string(steam::kAppId) : path.substr(q + 7, path.find_first_not_of("0123456789", q + 7) - q - 7);
+	return "{\"" + id + "\":{\"success\":true,\"data\":{\"type\":\"game\",\"name\":\"" + steam::kGameName + "\",\"steam_appid\":" + id + "}}}";
+}
+// one URL_COMPONENTSA field (pointer at o, length at o + 4): copy into the caller's buffer, or point into the URL
+void urlPart(uint32_t uc, uint32_t o, uint32_t url, size_t at, const std::string& v)
+{
+	uint32_t ptr = guest::load<uint32_t>(uc + o), len = guest::load<uint32_t>(uc + o + 4);
+	if (!len) return;
+	if (ptr)
+	{
+		uint32_t n = std::min<uint32_t>((uint32_t)v.size(), len - 1);
+		memcpy(guest::host(ptr), v.data(), n);
+		guest::store<uint8_t>(ptr + n, 0);
+		guest::store<uint32_t>(uc + o + 4, n);
+	}
+	else
+	{
+		guest::store<uint32_t>(uc + o, v.empty() ? 0 : url + (uint32_t)at);
+		guest::store<uint32_t>(uc + o + 4, (uint32_t)v.size());
+	}
+}
+}
+IMP_ID(INET, "InternetOpenA", InternetOpenA, 20) { std::lock_guard<std::mutex> l(webMu); uint32_t h = webNext++; web[h] = WebReq(); SET(h); }
+// (url, length, flags, URL_COMPONENTSA*): scheme://host[:port]/path?extra
+IMP_ID(INET, "InternetCrackUrlA", InternetCrackUrlA, 16)
+{
+	uint32_t url = ARG(0), uc = ARG(3);
+	std::string u = ARG(1) ? std::string((const char*)guest::host(url), ARG(1)) : gstr(url);
+	size_t se = u.find("://");
+	if (se == std::string::npos || !uc) { setLastError(12006); SET(0); return; }   // ERROR_INTERNET_UNRECOGNIZED_SCHEME
+	std::string scheme = u.substr(0, se);
+	size_t hs = se + 3, pe = u.find_first_of("/?#", hs);
+	if (pe == std::string::npos) pe = u.size();
+	std::string hostPort = u.substr(hs, pe - hs), host = hostPort;
+	uint32_t port = scheme == "https" ? 443 : 80;
+	if (size_t col = hostPort.find(':'); col != std::string::npos) { host = hostPort.substr(0, col); port = (uint32_t)atoi(hostPort.c_str() + col + 1); }
+	size_t qs = u.find_first_of("?#", pe);
+	std::string path = u.substr(pe, (qs == std::string::npos ? u.size() : qs) - pe), extra = qs == std::string::npos ? "" : u.substr(qs);
+	urlPart(uc, 4, url, 0, scheme);
+	guest::store<uint32_t>(uc + 12, scheme == "https" ? 4 : scheme == "http" ? 3 : 0);   // INTERNET_SCHEME_HTTP(S)
+	urlPart(uc, 16, url, hs, host);
+	guest::store<uint16_t>(uc + 24, (uint16_t)port);
+	urlPart(uc, 28, url, 0, "");
+	urlPart(uc, 36, url, 0, "");
+	urlPart(uc, 44, url, pe, path);
+	urlPart(uc, 52, url, qs == std::string::npos ? 0 : qs, extra);
+	SET(1);
+}
+// (internet, server, port, user, password, service, flags, context)
+IMP_ID(INET, "InternetConnectA", InternetConnectA, 32)
+{
+	std::string host = ARG(1) ? gstr(ARG(1)) : "";
+	std::lock_guard<std::mutex> l(webMu);
+	if (!web.count(ARG(0))) { setLastError(kNoInternet); SET(0); return; }
+	uint32_t h = webNext++;
+	web[h].host = host;
+	SET(h);
+}
+// (connect, verb, object, version, referrer, accept types, flags, context)
+IMP_ID(INET, "HttpOpenRequestA", HttpOpenRequestA, 32)
+{
+	std::string path = ARG(2) ? gstr(ARG(2)) : "/";
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end()) { setLastError(kNoInternet); SET(0); return; }
+	uint32_t h = webNext++;
+	web[h].host = it->second.host;
+	web[h].path = path;
+	SET(h);
+}
+IMP_ID(INET, "HttpAddRequestHeadersA", HttpAddRequestHeadersA, 16) { SET(1); }
+// (request, headers, headers length, optional, optional length)
+IMP_ID(INET, "HttpSendRequestA", HttpSendRequestA, 20)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end()) { setLastError(kNoInternet); SET(0); return; }
+	WebReq& r = it->second;
+	r.body = storeAnswer(r.host, r.path);
+	r.at = 0;
+	r.sent = !r.body.empty();
+	log("wininet: GET %s%s -> %s", r.host.c_str(), r.path.c_str(), r.sent ? "answered (Steam store)" : "no internet");
+	if (!r.sent) setLastError(kNoInternet);
+	SET(r.sent ? 1 : 0);
+}
+// (request, bytes available*, flags, context)
+IMP_ID(INET, "InternetQueryDataAvailable", InternetQueryDataAvailable, 16)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end() || !it->second.sent) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); setLastError(kNoInternet); SET(0); return; }
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), (uint32_t)(it->second.body.size() - it->second.at));
+	SET(1);
+}
+// (handle, buffer, bytes to read, bytes read*)
+IMP_ID(INET, "InternetReadFile", InternetReadFile, 16)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), 0);
+	if (it == web.end() || !it->second.sent) { setLastError(kNoInternet); SET(0); return; }
+	WebReq& r = it->second;
+	uint32_t n = (uint32_t)std::min<size_t>(ARG(2), r.body.size() - r.at);
+	if (n) memcpy(guest::host(ARG(1)), r.body.data() + r.at, n);
+	r.at += n;
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), n);
+	SET(1);
+}
+IMP_ID(INET, "InternetCloseHandle", InternetCloseHandle, 4) { std::lock_guard<std::mutex> l(webMu); web.erase(ARG(0)); SET(1); }
 
 // ======================= d3dx9_29 math (the texture / effect functions come from the d3dx9_35 set, imports.cpp alias)
 namespace

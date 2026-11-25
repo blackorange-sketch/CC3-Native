@@ -30,6 +30,6 @@ Starting point: RA3-Native covered 431 / 557 imports (77%).
 - **Stubs**: GDI32 (measures text with a fixed 8x16 cell, draws nothing), DINPUT8 (returns E_FAIL), WININET (no connection).
 
 ## Open questions for the first run
-- Command line: `"C:\RA3\RetailExe\1.9\cnc3game.dat" -config CNC3_<language>_<version>.SkuDef -win` — check the SkuDef names in the Steam folder.
+- Command line: `"C:\CC3\RetailExe\<version>\cnc3game.dat" -config CNC3_<language>_<version>.SkuDef -win` — SkuDef found by the launcher (✅ CNC3_russian_* detected).
 - Registry: everything reports "not found" (as for RA3). CC3 may want an install path / language key.
 - Does the game survive DirectInput8Create failing, or does it need a minimal keyboard/mouse device?

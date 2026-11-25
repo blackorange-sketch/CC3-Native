@@ -63,6 +63,18 @@ jobs:
           sha256sum game/cnc3game.dat
           echo "GAME_SHA256=$(sha256sum game/cnc3game.dat | cut -d' ' -f1)" >> $GITHUB_ENV
 
+      # Steam build: the stand-in steam_api (runtime/steam.cpp) needs every Steam interface's method table, generated
+      # from the Steamworks SDK headers (public in the Steamworks.NET repo); without it fake interfaces pop nothing
+      - name: Steam interface tables
+        run: |
+          git init -q sdkh && git -C sdkh remote add origin https://github.com/rlabrecque/Steamworks.NET \
+            && git -C sdkh fetch -q --depth 1 --filter=blob:none origin 7e5ab1859e30dab8162de2327d7fcfd176ce1064 \
+            && git -C sdkh sparse-checkout set --no-cone '/CodeGen/steam/*.h' && git -C sdkh checkout -q FETCH_HEAD \
+            && python3 tools/steam_gen.py sdkh/CodeGen/steam runtime/steam_ifaces.inc
+          ls -la runtime/steam_ifaces.inc || echo "no Steam interface tables (fake interfaces will pop nothing)"
+          echo "Steam interfaces the game asks for:"
+          strings -n 8 game/cnc3game.dat | grep -E '^(Steam|STEAM)[A-Za-z_]*[0-9]{3}$|^SteamAPI_|^SteamInternal_' | sort -u | head -60 || true
+
       - name: Build Capstone
         run: |
           git clone https://github.com/capstone-engine/capstone

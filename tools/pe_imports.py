@@ -38,6 +38,7 @@ def parse(path):
     image_base = struct.unpack_from("<Q" if is64 else "<I", data, opt + (24 if is64 else 28))[0]
     dd_off = opt + (112 if is64 else 96)
     import_rva, import_size = struct.unpack_from("<II", data, dd_off + 8)
+    delay_rva = struct.unpack_from("<I", data, dd_off + 13 * 8)[0]
 
     sections = []
     sec_off = opt + opt_size
@@ -70,7 +71,28 @@ def parse(path):
         imports[dll] = funcs
         off += 20
 
+    # delay-load imports (e.g. steam_api.dll): resolved by the game itself through LoadLibrary / GetProcAddress
+    delay = {}
+    off = rva_to_off(delay_rva, sections) if delay_rva else None
+    while off is not None:
+        attrs, name_rva, _, _, int_rva = struct.unpack_from("<IIIII", data, off)
+        if not name_rva:
+            break
+        fix = 0 if attrs & 1 else image_base   # old descriptors hold VAs
+        dll = cstr(data, rva_to_off(name_rva - fix, sections))
+        funcs = []
+        thunk = rva_to_off(int_rva - fix, sections) if int_rva else None
+        while thunk is not None:
+            val = struct.unpack_from("<I", data, thunk)[0]
+            if val == 0:
+                break
+            funcs.append(f"#ordinal {val & 0xFFFF}" if val & (1 << 31) else cstr(data, rva_to_off((val - fix) & 0x7FFFFFFF, sections) + 2))
+            thunk += 4
+        delay[dll] = funcs
+        off += 32
+
     return {
+        "delay_imports": delay,
         "file": path,
         "machine": MACHINES.get(machine, hex(machine)),
         "timestamp": timestamp,
@@ -97,6 +119,8 @@ def main():
     odd = [s["name"] for s in info["sections"] if s["name"] not in known]
     if odd:
         print(f"  ! non-standard sections (possible protection): {', '.join(odd)}")
+    for dll, funcs in info["delay_imports"].items():
+        print(f"  delay-loaded: {dll} ({len(funcs)}): {', '.join(funcs[:40])}")
     total = sum(len(f) for f in info["imports"].values())
     print(f"\nImports: {len(info['imports'])} DLLs, {total} functions")
     for dll, funcs in sorted(info["imports"].items(), key=lambda x: x[0].lower()):
