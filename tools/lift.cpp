@@ -610,6 +610,14 @@ struct Gen
 					e.line("{ uint64_t a = " + M(op(0)) + ", b = " + S(op(1)) + "; " + M(op(0)) + " = " + o + "; }");
 					mmxHandled = true;
 				}
+				else if (id == X86_INS_MOVNTQ && isM(op(1)) && op(0).type == X86_OP_MEM)
+				{
+					// non-temporal store (SSE): a plain store here
+					e.line("guest::store<uint64_t>(" + e.ea(op(0)) + ", " + M(op(1)) + ");");
+					mmxHandled = true;
+				}
+				else if (id == X86_INS_MOVDQ2Q && isM(op(0)) && isX(op(1))) { e.line(M(op(0)) + " = " + X(op(1)) + ".q[0];"); mmxHandled = true; }
+				else if (id == X86_INS_MOVQ2DQ && isX(op(0)) && isM(op(1))) { e.line(X(op(0)) + ".q[0] = " + M(op(1)) + "; " + X(op(0)) + ".q[1] = 0;"); mmxHandled = true; }
 				else if (id == X86_INS_MOVQ)
 				{
 					if (isM(op(0))) { e.line("{ uint64_t v = " + S(op(1)) + "; " + M(op(0)) + " = v; }"); mmxHandled = true; }
@@ -648,6 +656,25 @@ struct Gen
 		if (!mmxHandled) switch (id)
 		{
 		case X86_INS_NOP: case X86_INS_PAUSE: case X86_INS_FNOP: break;
+
+		// SSE2 dword shuffle: dst.u[i] = src.u[(imm >> 2i) & 3]
+		case X86_INS_PSHUFD:
+			if (x.op_count != 3 || !isX(op(0)) || op(2).type != X86_OP_IMM) { ok = false; break; }
+			{
+				unsigned im = (unsigned)op(2).imm & 0xffu;
+				e.line(fmt("{ X128 s = %s; X128 r; r.u[0] = s.u[%u]; r.u[1] = s.u[%u]; r.u[2] = s.u[%u]; r.u[3] = s.u[%u]; %s = r; }", src128(op(1)).c_str(),
+				           im & 3, (im >> 2) & 3, (im >> 4) & 3, (im >> 6) & 3, X(op(0)).c_str()));
+			}
+			break;
+		// double -> int32 (truncating / current rounding); out of range gives 0x80000000 like x86
+		case X86_INS_CVTTSD2SI: case X86_INS_CVTSD2SI:
+		{
+			if (op(0).type != X86_OP_REG || sz != 4) { ok = false; break; }
+			std::string v = isX(op(1)) ? X(op(1)) + ".d[0]" : "guest::load<double>(" + e.ea(op(1)) + ")";
+			std::string f = id == X86_INS_CVTTSD2SI ? "trunc" : "nearbyint";
+			e.line("{ double v = " + f + "(" + v + "); " + e.wr(op(0), "(v >= -2147483648.0 && v < 2147483648.0) ? (uint32_t)(int32_t)v : 0x80000000u") + " }");
+			break;
+		}
 
 		case X86_INS_MOV:
 			if (op(0).type == X86_OP_REG && op(1).type == X86_OP_REG) { RegInfo a, b; if (!regInfo(op(0).reg, a) || !regInfo(op(1).reg, b)) { ok = false; break; } }
@@ -825,6 +852,16 @@ struct Gen
 			}
 			else
 			{
+				if (sz == 2)
+				{
+					std::string a = x.op_count == 2 ? e.rd(op(0)) : e.rd(op(1));
+					std::string b = x.op_count == 2 ? e.rd(op(1)) : fmt("(uint16_t)%s", hex((uint32_t)op(2).imm & 0xffffu).c_str());
+					e.line("{ int32_t p = (int32_t)(int16_t)" + a + " * (int16_t)" + b + ";");
+					e.flag(CF, "p != (int16_t)p"); e.flag(OF, "p != (int16_t)p");
+					e.line(e.wr(op(0), "(uint16_t)p"));
+					e.line("}");
+					break;
+				}
 				if (sz != 4) { ok = false; break; }
 				// imul r, r/m   or   imul r, r/m, imm
 				std::string a = x.op_count == 2 ? e.rd(op(0)) : e.rd(op(1));
