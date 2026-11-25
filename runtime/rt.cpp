@@ -413,6 +413,7 @@ static inline int liftedIndex(uint32_t addr)
 }
 // ---- per-site inline cache miss: polymorphic sites miss often, so the shared hash cache comes before the binary
 // search (the search on every miss cost ~14% of the game thread and made saving the game hang)
+namespace rt { bool isLifted(uint32_t addr) { return liftedIndex(addr) >= 0; } }
 void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
 {
 	// import stubs first (a range check): COM methods (every Direct3D call) and Win32 functions are called through
@@ -458,7 +459,10 @@ void call_target(CPU* c, uint32_t addr)
 		{
 			fprintf(stderr, "%s=%08x", nm[i], c->r[i]);
 			uint32_t v = c->r[i];
-			if (v >= 0x400000 && v < 0x70000000 && i != 4 && i != 0)
+			// only memory known to be mapped (the image): a register may hold any number, and reading it here must not fault
+			bool inImage = false;
+			for (auto& [a, n] : imageSections) if (v >= a && v + 32 <= a + n) inImage = true;
+			if (inImage && i != 4)
 			{
 				fprintf(stderr, " [");
 				for (int k = 0; k < 8; k++) fprintf(stderr, " %08x", guest::load<uint32_t>(v + 4 * k));

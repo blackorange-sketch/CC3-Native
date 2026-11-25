@@ -36,6 +36,7 @@ struct Config
 	bool wideScreen = false;             // launcher: game picture as wide as the screen allows (Options.ini resolution patched)            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
 };
 std::string commandLine();               // the game's command line (language config)
+bool isLifted(uint32_t addr);             // a recompiled function starts at this guest address
 std::string modulePath();                // C:\CC3\RetailExe\<version>\cnc3game.dat
 extern Config config;
 

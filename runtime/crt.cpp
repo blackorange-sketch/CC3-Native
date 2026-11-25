@@ -451,8 +451,15 @@ IMP_C(DLL, _exit) { log("_exit(%d)", (int)ARG(0)); fflush(nullptr); _exit((int)A
 IMP_C(DLL, _amsg_exit) { fatal("_amsg_exit(%u)", ARG(0)); }
 IMP_C(DLL, _initterm)
 {
+	if (verbose()) log("_initterm %08x..%08x", ARG(0), ARG(1));
 	for (uint32_t p = ARG(0); p < ARG(1); p += 4)
-		if (uint32_t fn = guest::load<uint32_t>(p)) callGuest(c, fn, {});
+		if (uint32_t fn = guest::load<uint32_t>(p))
+		{
+			// an entry the recompiler did not find as a function would end in "call to unknown guest address":
+			// name the table slot so the analyzer can be pointed at it
+			if (!isLifted(fn) && !imports::lookup(fn)) fatal("_initterm: entry %08x (table slot %08x) is not a recompiled function", fn, p);
+			callGuest(c, fn, {});
+		}
 }
 IMP_C(DLL, _initterm_e)
 {
