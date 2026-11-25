@@ -544,6 +544,16 @@ bool game_gate(CPU* c, uint32_t fn)   // true = skip the call (eax = the value g
 	}
 	return false;
 }
+// can these guest bytes be read without faulting? (write() into a pipe fails with EFAULT instead of a signal)
+static bool readableGuest(uint32_t a, uint32_t n)
+{
+	static int fds[2] = {-1, -1};
+	if (fds[0] < 0 && pipe(fds) != 0) return false;
+	char sink[64];
+	bool ok = write(fds[1], guest::host(a), n) == (ssize_t)n;
+	if (ok) { ssize_t r = read(fds[0], sink, n); (void)r; }
+	return ok;
+}
 void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
 	(void)a1; (void)a2;
@@ -554,9 +564,32 @@ void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2,
 		nl++;
 		uint32_t file = guest::load<uint32_t>(ecx), size = guest::load<uint32_t>(ecx + 0x14);
 		uint32_t vt = file ? guest::load<uint32_t>(file) : 0;
-		uint8_t head[16] = {};
 		rt::log("hook: chunk stream %08x on file %08x (vtable %08x) size %u (arg %08x)", ecx, file, vt, size, a0);
-		(void)head;
+		// the file object: its words, and any that point at a readable string (the file name)
+		std::string words;
+		for (int i = 0; i < 16 && file; i++)
+		{
+			uint32_t w = guest::load<uint32_t>(file + 4 * i);
+			char b[16]; snprintf(b, sizeof b, " %08x", w); words += b;
+			if (w > 0x10000 && w < 0x7f000000 && readableGuest(w, 4))
+			{
+				std::string t;
+				for (int k = 0; k < 120; k++) { uint8_t ch = guest::load<uint8_t>(w + k); if (!ch) break; if (ch < 0x20 || ch > 0x7e) { t.clear(); break; } t += (char)ch; }
+				if (t.size() >= 4) rt::log("hook:   file word %d -> '%s'", i, t.c_str());
+			}
+		}
+		rt::log("hook:   file object:%s", words.c_str());
+		// the stream's buffered bytes, if any (first 32)
+		for (int i = 1; i < 10; i++)
+		{
+			uint32_t w = guest::load<uint32_t>(ecx + 4 * i);
+			if (w > 0x10000 && w < 0x7f000000 && readableGuest(w, 32))
+			{
+				std::string hx;
+				for (int k = 0; k < 32; k++) { char b[4]; snprintf(b, sizeof b, "%02x", guest::load<uint8_t>(w + k)); hx += b; }
+				rt::log("hook:   stream word %d -> %08x: %s", i, w, hx.c_str());
+			}
+		}
 	}
 	else if (fn == gb::HeightMapParse && ecx)
 	{

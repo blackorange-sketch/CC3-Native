@@ -840,6 +840,9 @@ static void scanBig(int fd, const std::string& name)
 			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
 				if (FILE* o = fopen(("/sdcard/cc3_dump/" + base).c_str(), "wb")) { fwrite(buf.data(), 1, sz, o); fclose(o); log("big %s: dumped %s (%u bytes)", name.c_str(), base.c_str(), sz); }
 		}
+		static int shownMap = 0;
+		if (ln.find("black12") != std::string::npos && shownMap++ < 40)
+			log("big %s: map entry [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
 		if ((ln.find("manifest") != std::string::npos || ln.find(".version") != std::string::npos) && shown++ < 12)
 			log("big %s: [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
 	}
