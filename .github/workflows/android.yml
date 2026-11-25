@@ -161,7 +161,7 @@ jobs:
           # the APK first and on its own: a failing side file (GitHub answers HTTP 500 now and then) must not cost the build
           for i in 1 2 3; do gh release upload nightly cc3-native.apk --clobber && break; sleep 15; done
           for f in cc3native-symbols.txt lift-stats.txt coverage.txt; do gh release upload nightly "$f" --clobber || echo "warning: $f not uploaded"; done
-          gh release edit nightly --notes-file notes.md --prerelease
+          gh release edit nightly --notes-file notes.md --prerelease || echo "warning: release notes not updated"
 
       - name: Publish stable release
         if: env.CHANNEL == 'stable'
