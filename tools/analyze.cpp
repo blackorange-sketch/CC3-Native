@@ -265,8 +265,20 @@ int main(int argc, char** argv)
 	{
 		again = false;
 		auto at = [&](uint32_t va, uint8_t b) { uint8_t x = 0; return seenInsn.count(va) && readVA(va, &x, 1) && x == b; };
+		// the bytes before v are an indirect jmp through memory (not necessarily decoded: chains of virtual-call
+		// thunks `mov eax, [ecx]; jmp [eax+N]` are only reached through member-function pointers)
+		auto endsInJmp = [&](uint32_t v) {
+			uint8_t b[7] = {};
+			if (!readVA(v - 7, b, 7)) return false;
+			auto modrm = [](uint8_t m) { return (m & 0x38) == 0x20; };   // ff /4 = jmp r/m32 (b[i] is the byte at v - 7 + i)
+			if (b[4] == 0xff && modrm(b[5]) && (b[5] & 0xc0) == 0x40 && (b[5] & 7) != 4) return true;   // jmp [reg+disp8]
+			if (b[5] == 0xff && modrm(b[6]) && (b[6] & 0xc0) == 0x00 && (b[6] & 7) != 4 && (b[6] & 7) != 5) return true;   // jmp [reg]
+			if (b[1] == 0xff && modrm(b[2]) && ((b[2] & 0xc0) == 0x80 || b[2] == 0x25) && (b[2] & 7) != 4) return true;   // jmp [reg+disp32] / [abs]
+			if (b[3] == 0xff && modrm(b[4]) && (b[4] & 0xc0) == 0x40 && (b[4] & 7) == 4) return true;   // jmp [sib+disp8]
+			return false;
+		};
 		for (uint32_t v : immCand)
-			if (!funcs.count(v) && !seenInsn.count(v) && (afterUncond.count(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2)))
+			if (!funcs.count(v) && !seenInsn.count(v) && (afterUncond.count(v) || endsInJmp(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2)))
 			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
 		if (again) drain();
 	}
