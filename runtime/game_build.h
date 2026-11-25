@@ -13,6 +13,10 @@ constexpr const char* kVer = "1.9";                       // default; the real o
 // cnc3game.dat 1.10 (Steam, SHA af568a89...): the graphics options' display mode check for the resolution list
 // (bpp >= 32, at least 800x600, aspect 4:3, 5:4, 16:9 or 16:10) - gated (CC3_GATES in the workflow)
 constexpr uint32_t ResModeCheck = 0x0044ed42;
+// texture size rounding to a power of two, clamped to the device caps (an endless loop for sizes above 2^31): gated
+constexpr uint32_t TexSizePow2 = 0x00747837, DevCapsPtr = 0x00bfeda4;
+// partition / shroud grid set-up from the map (width, height, border) and PartitionCellSize (logged, then runs)
+constexpr uint32_t GridSetup = 0x00813b2e;
 constexpr const char* kSkuPrefix = "CNC3";                 // CNC3_<language>_<version>.SkuDef
 constexpr const char* kProfilesDir = "command & conquer 3 tiberium wars/profiles";   // under My Documents (lower case)
 }

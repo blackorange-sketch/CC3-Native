@@ -510,6 +510,38 @@ bool game_gate(CPU* c, uint32_t fn)   // true = skip the call (eax = the value g
 		if (wide && nl++ < 8) rt::log("wide screen: resolution list accepts %u x %u", w, h);
 		return wide;
 	}
+	if (fn == gb::TexSizePow2)
+	{
+		// (uint* w, uint* h): each rounded up to a power of two, at most the device's max texture size. The game's loop
+		// never ends for a size above 2^31 (a broken input, see GridSetup); same result here, without the hang
+		uint32_t caps = guest::load<uint32_t>(gb::DevCapsPtr);
+		if (!caps) return true;
+		for (int k = 0; k < 2; k++)
+		{
+			uint32_t p = guest::load<uint32_t>(c->r[ESP] + 4 + 4 * k), v = guest::load<uint32_t>(p);
+			uint32_t mx = guest::load<uint32_t>(caps + 0x60 + 4 * k);
+			uint64_t r = 1;
+			while (r < v) r <<= 1;
+			uint32_t out = r < mx ? (uint32_t)r : mx;
+			static int nl = 0;
+			if (v > mx && nl++ < 10) rt::log("gate: texture size %u (0x%x) above the device limit %u - clamped", v, v, mx);
+			guest::store<uint32_t>(p, out);
+		}
+		return true;
+	}
+	if (fn == gb::GridSetup)
+	{
+		// (map heightmap*, float cellX, float cellY)
+		static int nl = 0;
+		if (nl++ < 6)
+		{
+			uint32_t hm = guest::load<uint32_t>(c->r[ESP] + 4);
+			float fx = guest::load<float>(c->r[ESP] + 8), fy = guest::load<float>(c->r[ESP] + 12);
+			if (hm) rt::log("gate: grid set-up map %d x %d border %d, cell %g x %g", (int32_t)guest::load<uint32_t>(hm + 0x14), (int32_t)guest::load<uint32_t>(hm + 0x18), (int32_t)guest::load<uint32_t>(hm + 0x1c), fx, fy);
+			else rt::log("gate: grid set-up without a map, cell %g x %g", fx, fy);
+		}
+		return false;
+	}
 	return false;
 }
 void game_hook_after(CPU*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
