@@ -100,11 +100,17 @@ int main(int argc, char** argv)
 	fprintf(stderr, "_setjmp3 IAT slot: %08x, thunks: %zu\n", opt.setjmpSlot, opt.setjmpThunks.size());
 	size_t full = 0, total = 0, ins = 0, bad = 0;
 	std::map<std::string, size_t> byMn, funcsByMn;
+	std::vector<std::string> realUnsup;
 	for (uint32_t e : funcs)
 	{
 		auto r = lift::liftFunction(pe, e, opt);
 		total++; ins += r.instructions; bad += r.unsupported.size();
 		if (r.unsupported.empty()) full++;
+		// instances in functions that look like real code (no undecodable bytes, a few unsupported instructions
+		// among many): these are the ones worth implementing; the rest is data or padding decoded as code
+		bool junk = r.unsupported.size() * 10 > r.instructions;
+		for (auto& u : r.unsupported) if (u.find("(bad)") != std::string::npos || u.find(" in ") != std::string::npos || u.find(" out ") != std::string::npos) junk = true;
+		if (!junk) for (auto& u : r.unsupported) { char b[16]; snprintf(b, sizeof b, "%08x: ", e); realUnsup.push_back(b + u); }
 		std::set<std::string> seen;
 		for (auto& u : r.unsupported)
 		{
@@ -141,5 +147,7 @@ int main(int argc, char** argv)
 	std::sort(v2.rbegin(), v2.rend());
 	printf("unsupported by mnemonic (instances / functions affected):\n");
 	for (size_t i = 0; i < v2.size() && i < 200; i++) printf("  %-12s %8zu %8zu\n", v2[i].second.c_str(), v2[i].first, funcsByMn[v2[i].second]);
+	printf("unsupported in functions that look like real code (function: address instruction), %zu:\n", realUnsup.size());
+	for (auto& u : realUnsup) printf("  %s\n", u.c_str());
 	return 0;
 }
