@@ -544,4 +544,23 @@ bool game_gate(CPU* c, uint32_t fn)   // true = skip the call (eax = the value g
 	}
 	return false;
 }
-void game_hook_after(CPU*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
+void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
+{
+	(void)a1; (void)a2;
+	static int nl = 0;
+	if (nl > 40) return;
+	if (fn == gb::ChunkStreamCtor && ecx)
+	{
+		nl++;
+		uint32_t file = guest::load<uint32_t>(ecx), size = guest::load<uint32_t>(ecx + 0x14);
+		uint32_t vt = file ? guest::load<uint32_t>(file) : 0;
+		uint8_t head[16] = {};
+		rt::log("hook: chunk stream %08x on file %08x (vtable %08x) size %u (arg %08x)", ecx, file, vt, size, a0);
+		(void)head;
+	}
+	else if (fn == gb::HeightMapParse && ecx)
+	{
+		nl++;
+		rt::log("hook: height map %08x parsed -> eax %08x: %d x %d border %d", ecx, c->r[EAX], (int32_t)guest::load<uint32_t>(ecx + 0x14), (int32_t)guest::load<uint32_t>(ecx + 0x18), (int32_t)guest::load<uint32_t>(ecx + 0x1c));
+	}
+}

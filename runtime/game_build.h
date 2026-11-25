@@ -17,6 +17,8 @@ constexpr uint32_t ResModeCheck = 0x0044ed42;
 constexpr uint32_t TexSizePow2 = 0x00747837, DevCapsPtr = 0x00bfeda4;
 // partition / shroud grid set-up from the map (width, height, border) and PartitionCellSize (logged, then runs)
 constexpr uint32_t GridSetup = 0x00813b2e;
+// map loading (logged): chunk stream on a file (size at +0x14) and WorldHeightMap's chunk parse
+constexpr uint32_t ChunkStreamCtor = 0x0056d658, HeightMapParse = 0x00827a88;
 constexpr const char* kSkuPrefix = "CNC3";                 // CNC3_<language>_<version>.SkuDef
 constexpr const char* kProfilesDir = "command & conquer 3 tiberium wars/profiles";   // under My Documents (lower case)
 }
