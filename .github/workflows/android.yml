@@ -90,7 +90,7 @@ jobs:
           ./analyze game/cnc3game.dat game/cc3 | tee analyze.txt | head -40
           mkdir -p lifted
           # no CC3_GATES / CC3_HOOKS for CC3 yet (runtime/game_build.h has no game addresses)
-          ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -20
+          ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -60
 
       # Import coverage: every import of the binary should have a host implementation (or a deliberate stub)
       - name: Import coverage

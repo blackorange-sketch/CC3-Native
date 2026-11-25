@@ -891,6 +891,26 @@ struct Gen
 			e.line("}");
 			break;
 		case X86_INS_BT: case X86_INS_BTS: case X86_INS_BTR: case X86_INS_BTC:
+			if (op(0).type == X86_OP_MEM && sz == 4)
+			{
+				// bit test on memory: an immediate bit number is taken modulo 32; a register bit number is signed and
+				// selects the dword (ea + 4 * (n >> 5)). With LOCK the read-modify-write is atomic.
+				bool lk = x.prefix[0] == X86_PREFIX_LOCK;
+				if (op(1).type == X86_OP_IMM) e.line("{ uint32_t ea = " + e.ea(op(0)) + "; unsigned n = " + std::to_string((uint32_t)op(1).imm & 31) + ";");
+				else e.line("{ int32_t off = (int32_t)" + e.rd(op(1), nullptr, 4) + "; uint32_t ea = " + e.ea(op(0)) + " + (uint32_t)((off >> 5) * 4); unsigned n = (unsigned)off & 31;");
+				if (id == X86_INS_BT) e.line("uint32_t v = G32(ea);");
+				else
+				{
+					const char* at = id == X86_INS_BTS ? "or" : id == X86_INS_BTR ? "and" : "xor";
+					std::string mask = id == X86_INS_BTR ? "~(1u << n)" : "(1u << n)";
+					std::string op_ = id == X86_INS_BTS ? " | " : id == X86_INS_BTR ? " & " : " ^ ";
+					if (lk) e.line(std::string("uint32_t v = __atomic_fetch_") + at + "((uint32_t*)guest::host(ea), " + mask + ", __ATOMIC_SEQ_CST);");
+					else e.line("uint32_t v = G32(ea); S32(ea, v" + op_ + mask + ");");
+				}
+				e.flag(CF, "v >> n & 1");
+				e.line("}");
+				break;
+			}
 			if (op(0).type != X86_OP_REG || sz != 4) { ok = false; break; }
 			e.line("{ unsigned n = " + e.rd(op(1), nullptr, 4) + " & 31;");
 			e.flag(CF, e.rd(op(0)) + " >> n & 1");
