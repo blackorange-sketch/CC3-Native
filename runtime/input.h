@@ -1,5 +1,6 @@
 // Input bridge: the Android layer pushes touch / key events here; the guest picks them up as Win32 window messages.
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace input
@@ -26,4 +27,8 @@ bool modActive(int idx);
 bool takeKeyboardToggle();
 // The guest cursor position (back buffer pixels): GetCursorPos for games that poll it (CC3)
 void cursorPos(int& x, int& y);
+// DirectInput keyboard (CC3): key events as DIK codes while a keyboard device is acquired
+void diEnable(bool on);
+bool diPop(uint8_t& dik, bool& down, bool peekOnly, size_t at);   // peekOnly: event `at` without removing; else the oldest, removed
+void diState(uint8_t* out256);
 }

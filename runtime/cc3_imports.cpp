@@ -3,6 +3,7 @@
 // GDI32 (text drawn with the system fonts) and a DINPUT8 stub, and WININET (the Steam store check).
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <unistd.h>
 
 #include "fpu.h"
+#include "imports.h"
 #include "input.h"
 #include "rt.h"
 #include "steam.h"
@@ -711,12 +713,185 @@ IMP_ID(GDI, "GetCharABCWidthsI", GetCharABCWidthsI, 20)
 	SET(1);
 }
 
-// ======================= DINPUT8 (bring-up: not available yet; keyboard and mouse reach the game as window messages)
+// ======================= DINPUT8
+// CC3 reads its keyboard through DirectInput (buffered data); the mouse stays on window messages (no mouse device,
+// as when DirectInput has none). The keys come from the same events the window messages are made of (input.cpp).
+namespace di
+{
+struct M { const char* name; int nargs; };
+const M kDI[] = {{"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"CreateDevice", 3}, {"EnumDevices", 4}, {"GetDeviceStatus", 1}, {"RunControlPanel", 2},
+	{"Initialize", 2}, {"FindDevice", 3}, {"EnumDevicesBySemantics", 5}, {"ConfigureDevices", 4}};
+const M kDev[] = {{"QueryInterface", 2}, {"AddRef", 0}, {"Release", 0}, {"GetCapabilities", 1}, {"EnumObjects", 3}, {"GetProperty", 2}, {"SetProperty", 2},
+	{"Acquire", 0}, {"Unacquire", 0}, {"GetDeviceState", 2}, {"GetDeviceData", 4}, {"SetDataFormat", 1}, {"SetEventNotification", 1},
+	{"SetCooperativeLevel", 2}, {"GetObjectInfo", 3}, {"GetDeviceInfo", 1}, {"RunControlPanel", 2}, {"Initialize", 3}, {"CreateEffect", 4},
+	{"EnumEffects", 3}, {"GetEffectInfo", 2}, {"GetForceFeedbackState", 1}, {"SendForceFeedbackCommand", 1}, {"EnumCreatedEffectObjects", 3},
+	{"Escape", 1}, {"Poll", 0}, {"SendDeviceData", 4}, {"EnumEffectsInFile", 4}, {"WriteEffectToFile", 4}, {"BuildActionMap", 3},
+	{"SetActionMap", 3}, {"GetImageInfo", 1}};
+constexpr uint32_t DI_OK = 0, S_FALSE_ = 1, E_NOTIMPL_ = 0x80004001, E_NOINTERFACE_ = 0x80004002, DIERR_DEVICENOTREG = 0x80040154;
+uint32_t vtDI = 0, vtDev = 0, seq = 1;
+std::mutex mu;
+std::map<uint32_t, int> refs;   // object address -> reference count
+// key names as DirectInput reports them (DIK code -> name), used for the key binding screen
+const char* keyName(uint32_t k)
+{
+	static const char* const row[] = {nullptr, "Esc", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Tab",
+		"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "Enter", "Ctrl", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "`",
+		"Shift", "\\", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Right Shift", "Num *", "Alt", "Space", "Caps Lock",
+		"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Num Lock", "Scroll Lock", "Num 7", "Num 8", "Num 9", "Num -",
+		"Num 4", "Num 5", "Num 6", "Num +", "Num 1", "Num 2", "Num 3", "Num 0", "Num Del"};
+	if (k < sizeof row / sizeof row[0]) return row[k];
+	switch (k)
+	{
+	case 0x57: return "F11"; case 0x58: return "F12"; case 0x9c: return "Num Enter"; case 0x9d: return "Right Ctrl"; case 0xb5: return "Num /";
+	case 0xb8: return "Right Alt"; case 0xc5: return "Pause"; case 0xc7: return "Home"; case 0xc8: return "Up"; case 0xc9: return "Page Up";
+	case 0xcb: return "Left"; case 0xcd: return "Right"; case 0xcf: return "End"; case 0xd0: return "Down"; case 0xd1: return "Page Down";
+	case 0xd2: return "Insert"; case 0xd3: return "Delete";
+	}
+	return nullptr;
+}
+void dispatchDI(CPU* c);
+void dispatchDev(CPU* c);
+uint32_t makeVt(const M* ms, size_t n, const char* prefix, imports::HostFn fn)
+{
+	uint32_t vt = gmalloc(4 * (uint32_t)n);
+	for (size_t i = 0; i < n; i++)
+		guest::store<uint32_t>(vt + 4 * (uint32_t)i, imports::addDynamic("dinput8.dll", std::string(prefix) + ms[i].name, fn, 4 * (ms[i].nargs + 1), (uint32_t)i));
+	return vt;
+}
+uint32_t make(bool device)
+{
+	std::lock_guard<std::mutex> l(mu);
+	if (!vtDI) { vtDI = makeVt(kDI, sizeof kDI / sizeof kDI[0], "IDirectInput8W::", dispatchDI); vtDev = makeVt(kDev, sizeof kDev / sizeof kDev[0], "IDirectInputDevice8W::", dispatchDev); }
+	uint32_t o = gmalloc(16);
+	guest::store<uint32_t>(o, device ? vtDev : vtDI);
+	refs[o] = 1;
+	return o;
+}
+bool common(CPU* c, uint32_t m, bool device)   // IUnknown
+{
+	uint32_t self = ARG(0);
+	if (m == 0)
+	{
+		uint32_t d1 = ARG(1) ? guest::load<uint32_t>(ARG(1)) : 1;
+		bool ok = d1 == 0 || (!device && (d1 == 0xbf798031u || d1 == 0xbf798030u)) || (device && (d1 == 0x54d41081u || d1 == 0x54d41080u));
+		if (ARG(2)) guest::store<uint32_t>(ARG(2), ok ? self : 0);
+		if (ok) { std::lock_guard<std::mutex> l(mu); refs[self]++; }
+		SET(ok ? DI_OK : E_NOINTERFACE_);
+		return true;
+	}
+	if (m == 1) { std::lock_guard<std::mutex> l(mu); SET((uint32_t)++refs[self]); return true; }
+	if (m == 2)
+	{
+		std::lock_guard<std::mutex> l(mu);
+		int r = --refs[self];
+		if (r <= 0) { refs.erase(self); if (device) input::diEnable(false); }
+		SET((uint32_t)std::max(0, r));
+		return true;
+	}
+	return false;
+}
+void dispatchDI(CPU* c)
+{
+	uint32_t m = imports::current->user;
+	if (imports::current->calls == 1) log("dinput: first call %s", imports::current->name.c_str());
+	if (common(c, m, false)) return;
+	switch (m)
+	{
+	case 3:   // CreateDevice(guid, out, outer): the system keyboard only
+	{
+		uint32_t d1 = ARG(1) ? guest::load<uint32_t>(ARG(1)) : 0;
+		if (d1 != 0x6f1d2b61u) { log("dinput: CreateDevice %08x refused (keyboard only)", d1); if (ARG(2)) guest::store<uint32_t>(ARG(2), 0); SET(DIERR_DEVICENOTREG); return; }
+		uint32_t dev = make(true);
+		guest::store<uint32_t>(ARG(2), dev);
+		log("dinput: keyboard device %08x", dev);
+		SET(DI_OK);
+		return;
+	}
+	case 4: SET(DI_OK); return;   // EnumDevices: no game controllers
+	case 5: SET(ARG(1) && guest::load<uint32_t>(ARG(1)) == 0x6f1d2b61u ? DI_OK : 1); return;
+	default: SET(m == 7 ? DI_OK : E_NOTIMPL_); return;
+	}
+}
+void dispatchDev(CPU* c)
+{
+	uint32_t m = imports::current->user;
+	if (imports::current->calls == 1) log("dinput: first call %s", imports::current->name.c_str());
+	if (common(c, m, true)) return;
+	switch (m)
+	{
+	case 3:   // GetCapabilities(DIDEVCAPS*): keyboard, 128 buttons
+	{
+		uint32_t p = ARG(1), sz = guest::load<uint32_t>(p);
+		if (sz > 4) memset(guest::host(p + 4), 0, std::min<uint32_t>(sz, 64) - 4);
+		guest::store<uint32_t>(p + 4, 1);          // DIDC_ATTACHED
+		guest::store<uint32_t>(p + 8, 0x0413);     // DI8DEVTYPE_KEYBOARD, sub type PCENH
+		guest::store<uint32_t>(p + 20, 128);       // buttons
+		SET(DI_OK);
+		return;
+	}
+	case 7: input::diEnable(true); SET(DI_OK); return;   // Acquire
+	case 8: SET(DI_OK); return;                           // Unacquire (keeps the buffer flowing: the game re-acquires)
+	case 9:   // GetDeviceState(size, data): 256 key bytes
+	{
+		uint8_t k[256];
+		input::diState(k);
+		memcpy(guest::host(ARG(2)), k, std::min<uint32_t>(ARG(1), 256));
+		SET(DI_OK);
+		return;
+	}
+	case 10:  // GetDeviceData(objSize, DIDEVICEOBJECTDATA*, count in/out, flags)
+	{
+		uint32_t sz = ARG(1), out = ARG(2), pn = ARG(3), flags = ARG(4);
+		uint32_t want = guest::load<uint32_t>(pn), n = 0;
+		bool peek = flags & 1;
+		uint8_t dik;
+		bool down;
+		while (n < want && input::diPop(dik, down, peek || !out, peek || !out ? n : 0))
+		{
+			if (out)
+			{
+				uint32_t e = out + n * sz;
+				guest::store<uint32_t>(e, dik); guest::store<uint32_t>(e + 4, down ? 0x80 : 0);
+				guest::store<uint32_t>(e + 8, (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); guest::store<uint32_t>(e + 12, seq++);
+				if (sz >= 20) guest::store<uint32_t>(e + 16, 0);
+			}
+			n++;
+		}
+		guest::store<uint32_t>(pn, n);
+		SET(DI_OK);
+		return;
+	}
+	case 14:  // GetObjectInfo(DIDEVICEOBJECTINSTANCEW*, obj, how): the key's name
+	{
+		uint32_t p = ARG(1), k = ARG(2);
+		const char* nm = keyName(k & 0xff);
+		if (!nm) { SET(0x80070002); return; }   // DIERR_OBJECTNOTFOUND
+		guest::store<uint32_t>(p + 20, k & 0xff);                       // dwOfs
+		guest::store<uint32_t>(p + 24, 0x0c | ((k & 0xff) << 8));       // DIDFT_PSHBUTTON | instance
+		for (int i = 0; i < 259 && nm[i]; i++) { guest::store<uint16_t>(p + 32 + 2 * i, (uint8_t)nm[i]); guest::store<uint16_t>(p + 34 + 2 * i, 0); }
+		SET(DI_OK);
+		return;
+	}
+	case 15:  // GetDeviceInfo(DIDEVICEINSTANCEW*)
+	{
+		uint32_t p = ARG(1), sz = guest::load<uint32_t>(p);
+		if (sz > 4) memset(guest::host(p + 4), 0, std::min<uint32_t>(sz, 1100) - 4);
+		guest::store<uint32_t>(p + 36, 0x0413);
+		SET(DI_OK);
+		return;
+	}
+	case 4: case 5: case 25: SET(DI_OK); return;   // EnumObjects, GetProperty, Poll
+	case 6: case 11: case 12: case 13: SET(DI_OK); return;   // SetProperty, SetDataFormat, SetEventNotification, SetCooperativeLevel
+	default: SET(E_NOTIMPL_); return;
+	}
+}
+}
 IMP_ID(DINPUT, "DirectInput8Create", DirectInput8Create, 20)
 {
-	log("DirectInput8Create(version %x): not implemented yet - the game gets window messages only", ARG(1));
-	if (ARG(3)) guest::store<uint32_t>(ARG(3), 0);
-	SET(0x80004005);   // E_FAIL
+	uint32_t o = di::make(false);
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), o);
+	log("DirectInput8Create(version %x) -> %08x (keyboard)", ARG(1), o);
+	SET(0);
 }
 
 // ======================= WININET

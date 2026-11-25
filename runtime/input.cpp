@@ -3,6 +3,7 @@
 #include "hud.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <chrono>
 #include <unistd.h>
@@ -61,6 +62,10 @@ uint32_t scanOf(uint32_t vk)
 	return 0;
 }
 
+std::mutex diMu;
+bool diOn = false;
+uint8_t diKeys[256] = {};
+std::deque<std::pair<uint8_t, bool>> diQ;
 void push(uint32_t msg, uint32_t wp, uint32_t lp, int gapMs)
 {
 	// keyboard messages carry the scan code like on Windows: the game maps hotkeys by scan code
@@ -73,6 +78,15 @@ void push(uint32_t msg, uint32_t wp, uint32_t lp, int gapMs)
 	int64_t t = std::max(nowMs(), lastReady + gapMs);
 	lastReady = t;
 	q.push_back({kHwnd, msg, wp, lp, t, curX, curY});
+	// the same key for a DirectInput keyboard (CC3 reads its keys there): DIK code = scan code, 0x80 for extended keys
+	if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP)
+	{
+		uint32_t sc = (lp >> 16) & 0x1ff;
+		uint8_t dik = (uint8_t)((sc & 0x7f) | ((sc & 0x100) ? 0x80 : 0));
+		bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+		std::lock_guard<std::mutex> l(diMu);
+		if (dik) { diKeys[dik] = down ? 0x80 : 0; if (diOn && diQ.size() < 256) diQ.push_back({dik, down}); }
+	}
 }
 uint32_t mouseFlags() { return (lDown ? 1u : 0u) | (rDown ? 2u : 0u) | (mDown ? 0x10u : 0u) | (keys[0x10] ? 4u : 0u) | (keys[0x11] ? 8u : 0u); }
 uint32_t xy() { return (uint32_t)(curX & 0xffff) | ((uint32_t)(curY & 0xffff) << 16); }
@@ -549,3 +563,17 @@ IMP_ID("USER32.dll", "GetClientRect", GetClientRect, 8)
 }
 
 namespace input { void cursorPos(int& x, int& y) { x = curX; y = curY; } }
+
+namespace input
+{
+void diEnable(bool on) { std::lock_guard<std::mutex> l(diMu); diOn = on; if (!on) diQ.clear(); }
+bool diPop(uint8_t& dik, bool& down, bool peekOnly, size_t at)
+{
+	std::lock_guard<std::mutex> l(diMu);
+	if (at >= diQ.size()) return false;
+	dik = diQ[at].first; down = diQ[at].second;
+	if (!peekOnly) diQ.pop_front();
+	return true;
+}
+void diState(uint8_t* out256) { std::lock_guard<std::mutex> l(diMu); memcpy(out256, diKeys, 256); }
+}
