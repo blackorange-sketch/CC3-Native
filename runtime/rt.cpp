@@ -453,6 +453,8 @@ void call_target(CPU* c, uint32_t addr)
 		return;
 	}
 	if (int i = liftedIndex(addr); i >= 0) { lifted_table[i].fn(c); return; }
+	// the address first: the register dump below is best effort
+	log("call to unknown guest address %08x (return address %08x, caller import %s)", addr, guest::load<uint32_t>(c->r[ESP]), imports::current ? imports::current->name.c_str() : "-");
 	{
 		const char* nm[8] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
 		for (int i = 0; i < 8; i++)
@@ -461,7 +463,7 @@ void call_target(CPU* c, uint32_t addr)
 			uint32_t v = c->r[i];
 			// only memory known to be mapped (the image): a register may hold any number, and reading it here must not fault
 			bool inImage = false;
-			for (auto& [a, n] : imageSections) if (v >= a && v + 32 <= a + n) inImage = true;
+			for (auto& [a, n] : imageSections) if (v >= a && (uint64_t)v + 32 <= (uint64_t)a + n) inImage = true;
 			if (inImage && i != 4)
 			{
 				fprintf(stderr, " [");

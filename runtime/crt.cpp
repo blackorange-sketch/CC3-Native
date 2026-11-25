@@ -465,7 +465,10 @@ IMP_C(DLL, _initterm_e)
 {
 	for (uint32_t p = ARG(0); p < ARG(1); p += 4)
 		if (uint32_t fn = guest::load<uint32_t>(p))
+		{
+			if (!isLifted(fn) && !imports::lookup(fn)) fatal("_initterm_e: entry %08x (table slot %08x) is not a recompiled function", fn, p);
 			if (uint32_t r = callGuestRet(c, fn, {})) { SET(r); return; }
+		}
 	SET(0);
 }
 IMP_C(DLL, __getmainargs)
