@@ -1,6 +1,6 @@
 // Imports C&C 3 needs on top of what the RA3 runtime already had (docs/GAP_VS_RA3.md):
 // MSVCR80 / KERNEL32 / USER32 / ole32 / OLEAUT32 / SHLWAPI functions, D3DX math, and bring-up stubs for
-// GDI32 (text drawing, real rendering comes later) and DINPUT8, and WININET (the Steam store check).
+// GDI32 (text drawn with the system fonts) and a DINPUT8 stub, and WININET (the Steam store check).
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -18,6 +18,9 @@
 #include "input.h"
 #include "rt.h"
 #include "steam.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "third_party/stb/stb_truetype.h"
 
 using namespace rt;
 
@@ -336,13 +339,192 @@ IMP_ID(OLEAUT, "#2", SysAllocString, 4)
 IMP_ID(OLEAUT, "#6", SysFreeString, 4) { if (ARG(0)) gfree(ARG(0) - 4); }
 IMP_ID(SHLW, "PathFileExistsA", PathFileExistsA, 4) { SET(access(hostPath(gstr(ARG(0))).c_str(), F_OK) == 0 ? 1 : 0); }
 
-// ======================= GDI32 (bring-up: text measures plausibly, nothing is drawn yet)
-// CC3 renders its UI text with GDI into a DIB section and uploads that as a texture. Real glyphs come with the
-// font step (FreeType / Android Canvas); until then the bitmaps stay empty.
-namespace { constexpr int kFontH = 16, kAscent = 13, kCharW = 8; }
-IMP_ID(GDI, "CreateFontA", CreateFontA, 56) { SET(fakeHandle()); }
-IMP_ID(GDI, "CreateFontIndirectA", CreateFontIndirectA, 4) { SET(fakeHandle()); }
-IMP_ID(GDI, "CreateCompatibleDC", CreateCompatibleDC, 4) { SET(fakeHandle()); }
+// ======================= GDI32 text
+// CC3 draws each glyph of its UI fonts with ExtTextOutW into a 64x64 24-bit DIB section (white on black,
+// ETO_OPAQUE, large glyphs in tiles through negative origins) and builds its font textures from those pixels. Glyphs
+// come from the phone's own fonts (/system/fonts, Roboto/Noto: Latin and Cyrillic) rasterised with stb_truetype.
+namespace gdi
+{
+struct Font { int height = 16, weight = 400; bool italic = false; std::string face; };
+struct Bitmap { uint32_t bits = 0; int w = 0, h = 0, bpp = 24; uint32_t stride = 0; };
+struct Dc { uint32_t font = 0, bitmap = 0; uint32_t text = 0xffffff, bk = 0; int bkMode = 2; };
+struct Face
+{
+	std::vector<uint8_t> data;
+	stbtt_fontinfo info{};
+	bool ok = false;
+	int winAscent = 0, winDescent = 0, unitsPerEm = 2048;
+};
+std::mutex mu;
+std::map<uint32_t, Font> fonts;
+std::map<uint32_t, Bitmap> bitmaps;
+std::map<uint32_t, Dc> dcs;
+uint32_t nextHandle = 0x5b000010;
+uint32_t newHandle() { uint32_t h = nextHandle; nextHandle += 4; return h; }
+
+bool loadFace(Face& f, const char* const* paths)
+{
+	for (const char* const* p = paths; *p; p++)
+	{
+		FILE* fp = fopen(*p, "rb");
+		if (!fp) continue;
+		fseek(fp, 0, SEEK_END);
+		long n = ftell(fp);
+		fseek(fp, 0, SEEK_SET);
+		f.data.resize(n > 0 ? (size_t)n : 0);
+		bool rd = n > 0 && fread(f.data.data(), 1, (size_t)n, fp) == (size_t)n;
+		fclose(fp);
+		if (!rd) continue;
+		int off = stbtt_GetFontOffsetForIndex(f.data.data(), 0);
+		if (off < 0 || !stbtt_InitFont(&f.info, f.data.data(), off)) continue;
+		f.unitsPerEm = ttUSHORT(f.data.data() + f.info.head + 18);
+		int asc, desc, gap;
+		stbtt_GetFontVMetrics(&f.info, &asc, &desc, &gap);
+		f.winAscent = asc; f.winDescent = -desc;
+		if (uint32_t os2 = stbtt__find_table(f.data.data(), (uint32_t)off, "OS/2"))
+		{
+			f.winAscent = ttUSHORT(f.data.data() + os2 + 74);
+			f.winDescent = ttUSHORT(f.data.data() + os2 + 76);
+		}
+		f.ok = true;
+		log("GDI: font %s (%d units/em, ascent %d descent %d)", *p, f.unitsPerEm, f.winAscent, f.winDescent);
+		return true;
+	}
+	return false;
+}
+Face& face(bool bold)
+{
+	static Face regular, boldF;
+	static bool triedR = false, triedB = false;
+	static const char* const kRegular[] = {"/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSans-Regular.ttf", "/system/fonts/DroidSans.ttf", "/system/fonts/RobotoStatic-Regular.ttf", nullptr};
+	static const char* const kBold[] = {"/system/fonts/Roboto-Bold.ttf", "/system/fonts/NotoSans-Bold.ttf", "/system/fonts/DroidSans-Bold.ttf", nullptr};
+	if (!triedR) { triedR = true; if (!loadFace(regular, kRegular)) log("GDI: no system font found - text stays empty"); }
+	if (bold)
+	{
+		if (!triedB) { triedB = true; loadFace(boldF, kBold); }
+		if (boldF.ok) return boldF;
+	}
+	return regular;
+}
+// a selected font in pixels
+struct Metrics { Face* f = nullptr; float scale = 1; int ascent = 13, descent = 3; bool fakeBold = false; };
+Metrics metrics(uint32_t fontH)
+{
+	Metrics m;
+	Font fo;
+	auto it = fonts.find(fontH);
+	if (it != fonts.end()) fo = it->second;
+	bool bold = fo.weight >= 600;
+	m.f = &face(bold);
+	m.fakeBold = bold && m.f == &face(false);
+	int h = fo.height ? fo.height : -12;
+	if (m.f->ok)
+	{
+		int cell = m.f->winAscent + m.f->winDescent;
+		m.scale = h < 0 ? (float)-h / (float)m.f->unitsPerEm : (float)h / (float)std::max(1, cell);
+		m.ascent = (int)lroundf(m.f->winAscent * m.scale);
+		m.descent = (int)lroundf(m.f->winDescent * m.scale);
+	}
+	else { int px = std::abs(h); m.ascent = px * 13 / 16; m.descent = px - m.ascent; }
+	return m;
+}
+int glyphOf(const Metrics& m, uint32_t ch) { return m.f->ok ? stbtt_FindGlyphIndex(&m.f->info, (int)ch) : (int)ch; }
+int advance(const Metrics& m, int glyph)
+{
+	if (!m.f->ok) return (m.ascent + m.descent) / 2;
+	int adv, lsb;
+	stbtt_GetGlyphHMetrics(&m.f->info, glyph, &adv, &lsb);
+	return (int)lroundf(adv * m.scale) + (m.fakeBold ? 1 : 0);
+}
+void putPixel(const Bitmap& b, int x, int y, uint32_t rgb)
+{
+	if (x < 0 || y < 0 || x >= b.w || y >= std::abs(b.h)) return;
+	int row = b.h > 0 ? b.h - 1 - y : y;   // positive height: bottom-up
+	uint8_t* p = (uint8_t*)guest::host(b.bits + (uint32_t)row * b.stride);
+	if (b.bpp == 24) { p += 3 * x; p[0] = rgb >> 16 & 255; p[1] = rgb >> 8 & 255; p[2] = rgb & 255; }   // BGR from COLORREF 0x00bbggrr
+	else if (b.bpp == 32) { p += 4 * x; p[0] = rgb >> 16 & 255; p[1] = rgb >> 8 & 255; p[2] = rgb & 255; p[3] = 0; }
+	else if (b.bpp == 8) p[x] = (uint8_t)((( rgb & 255) + (rgb >> 8 & 255) + (rgb >> 16 & 255)) / 3);
+}
+uint32_t getPixel(const Bitmap& b, int x, int y)
+{
+	if (x < 0 || y < 0 || x >= b.w || y >= std::abs(b.h)) return 0;
+	int row = b.h > 0 ? b.h - 1 - y : y;
+	const uint8_t* p = (const uint8_t*)guest::host(b.bits + (uint32_t)row * b.stride);
+	if (b.bpp == 24 || b.bpp == 32) { p += (b.bpp / 8) * x; return (uint32_t)p[2] | (uint32_t)p[1] << 8 | (uint32_t)p[0] << 16; }
+	if (b.bpp == 8) return p[x] * 0x010101u;
+	return 0;
+}
+uint32_t mix(uint32_t a, uint32_t b, int cov)   // COLORREF lerp, cov 0..255
+{
+	uint32_t r = 0;
+	for (int s = 0; s < 24; s += 8) { int ca = a >> s & 255, cb = b >> s & 255; r |= (uint32_t)((ca * (255 - cov) + cb * cov + 127) / 255) << s; }
+	return r;
+}
+// draws glyphs (indices) with the DC's font and colours; (x, y) is the top of the cell (TA_TOP | TA_LEFT)
+void drawGlyphs(const Dc& dc, int x, int y, const int* glyphs, int n, const int32_t* dx)
+{
+	auto bi = bitmaps.find(dc.bitmap);
+	if (bi == bitmaps.end() || !bi->second.bits) return;
+	const Bitmap& b = bi->second;
+	Metrics m = metrics(dc.font);
+	if (!m.f->ok) return;
+	int pen = x, base = y + m.ascent;
+	std::vector<uint8_t> cov;
+	for (int i = 0; i < n; i++)
+	{
+		int g = glyphs[i];
+		int x0, y0, x1, y1;
+		stbtt_GetGlyphBitmapBox(&m.f->info, g, m.scale, m.scale, &x0, &y0, &x1, &y1);
+		int w = x1 - x0, h = y1 - y0;
+		if (w > 0 && h > 0)
+		{
+			cov.assign((size_t)w * h, 0);
+			stbtt_MakeGlyphBitmap(&m.f->info, cov.data(), w, h, w, m.scale, m.scale, g);
+			for (int pass = 0; pass < (m.fakeBold ? 2 : 1); pass++)
+				for (int yy = 0; yy < h; yy++)
+					for (int xx = 0; xx < w; xx++)
+					{
+						int c = cov[(size_t)yy * w + xx];
+						if (!c) continue;
+						int px = pen + x0 + xx + pass, py = base + y0 + yy;
+						putPixel(b, px, py, mix(getPixel(b, px, py), dc.text, c));
+					}
+		}
+		pen += dx ? dx[i] : advance(m, g);
+	}
+}
+void fillRect(const Dc& dc, int l, int t, int r, int bo, uint32_t rgb)
+{
+	auto bi = bitmaps.find(dc.bitmap);
+	if (bi == bitmaps.end() || !bi->second.bits) return;
+	for (int y = std::max(0, t); y < std::min(bo, std::abs(bi->second.h)); y++)
+		for (int x = std::max(0, l); x < std::min(r, bi->second.w); x++) putPixel(bi->second, x, y, rgb);
+}
+int textWidth(const Metrics& m, const int* glyphs, int n) { int w = 0; for (int i = 0; i < n; i++) w += advance(m, glyphs[i]); return w; }
+}
+
+IMP_ID(GDI, "CreateFontA", CreateFontA, 56)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	gdi::Font f;
+	f.height = (int32_t)ARG(0); f.weight = (int32_t)ARG(4); f.italic = ARG(5) != 0; f.face = ARG(13) ? gstr(ARG(13)) : std::string();
+	uint32_t h = gdi::newHandle();
+	gdi::fonts[h] = f;
+	static int n = 0;
+	if (n++ < 30) log("GDI: CreateFontA '%s' height %d weight %d -> %x", f.face.c_str(), f.height, f.weight, h);
+	SET(h);
+}
+IMP_ID(GDI, "CreateFontIndirectA", CreateFontIndirectA, 4)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	uint32_t lf = ARG(0);
+	gdi::Font f;
+	f.height = guest::load<int32_t>(lf); f.weight = guest::load<int32_t>(lf + 16); f.italic = guest::load<uint8_t>(lf + 20) != 0; f.face = gstr(lf + 28);
+	uint32_t h = gdi::newHandle();
+	gdi::fonts[h] = f;
+	SET(h);
+}
+IMP_ID(GDI, "CreateCompatibleDC", CreateCompatibleDC, 4) { std::lock_guard<std::mutex> l(gdi::mu); uint32_t h = gdi::newHandle(); gdi::dcs[h] = gdi::Dc(); SET(h); }
 IMP_ID(GDI, "CreateDIBitmap", CreateDIBitmap, 24) { SET(fakeHandle()); }
 // (hdc, BITMAPINFO*, usage, void** bits, section, offset): the pixel memory must exist, the game writes and reads it
 IMP_ID(GDI, "CreateDIBSection", CreateDIBSection, 24)
@@ -357,43 +539,175 @@ IMP_ID(GDI, "CreateDIBSection", CreateDIBSection, 24)
 	if (ARG(3)) guest::store<uint32_t>(ARG(3), bits);
 	static int n = 0;
 	if (n++ < 20) log("GDI: CreateDIBSection %dx%d %u bpp -> %u bytes at %08x", w, h, bpp, size, bits);
-	SET(bits ? fakeHandle() : 0);
+	if (!bits) { SET(0); return; }
+	std::lock_guard<std::mutex> l(gdi::mu);
+	uint32_t hb = gdi::newHandle();
+	gdi::bitmaps[hb] = gdi::Bitmap{bits, std::abs(w), h, (int)bpp, stride};
+	SET(hb);
 }
-IMP_ID(GDI, "SelectObject", SelectObject, 8) { SET(0x50001); }
-IMP_ID(GDI, "DeleteObject", DeleteObject, 4) { SET(1); }
-IMP_ID(GDI, "DeleteDC", DeleteDC, 4) { SET(1); }
-IMP_ID(GDI, "SetBkColor", SetBkColor, 8) { SET(0xffffff); }
-IMP_ID(GDI, "SetTextColor", SetTextColor, 8) { SET(0); }
-IMP_ID(GDI, "SetBkMode", SetBkMode, 8) { SET(2); }
+IMP_ID(GDI, "SelectObject", SelectObject, 8)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	uint32_t o = ARG(1), prev = 0x50001;
+	if (d != gdi::dcs.end())
+	{
+		if (gdi::fonts.count(o)) { prev = d->second.font ? d->second.font : 0x50002; d->second.font = o; }
+		else if (gdi::bitmaps.count(o)) { prev = d->second.bitmap ? d->second.bitmap : 0x50003; d->second.bitmap = o; }
+		else if (o == 0x50002) d->second.font = 0;
+		else if (o == 0x50003) d->second.bitmap = 0;
+	}
+	SET(prev);
+}
+IMP_ID(GDI, "DeleteObject", DeleteObject, 4)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	gdi::fonts.erase(ARG(0));
+	auto b = gdi::bitmaps.find(ARG(0));
+	if (b != gdi::bitmaps.end()) { if (b->second.bits) gfree(b->second.bits); gdi::bitmaps.erase(b); }
+	SET(1);
+}
+IMP_ID(GDI, "DeleteDC", DeleteDC, 4) { std::lock_guard<std::mutex> l(gdi::mu); gdi::dcs.erase(ARG(0)); SET(1); }
+IMP_ID(GDI, "SetBkColor", SetBkColor, 8)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	if (d == gdi::dcs.end()) { SET(0xffffff); return; }
+	uint32_t p = d->second.bk; d->second.bk = ARG(1) & 0xffffff; SET(p);
+}
+IMP_ID(GDI, "SetTextColor", SetTextColor, 8)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	if (d == gdi::dcs.end()) { SET(0); return; }
+	uint32_t p = d->second.text; d->second.text = ARG(1) & 0xffffff; SET(p);
+}
+IMP_ID(GDI, "SetBkMode", SetBkMode, 8)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	if (d == gdi::dcs.end()) { SET(2); return; }
+	int p = d->second.bkMode; d->second.bkMode = (int)ARG(1); SET((uint32_t)p);
+}
 IMP_ID(GDI, "SetMapMode", SetMapMode, 8) { SET(1); }
 IMP_ID(GDI, "SetDeviceGammaRamp", SetDeviceGammaRamp, 8) { SET(1); }
-IMP_ID(GDI, "BitBlt", BitBlt, 36) { SET(1); }
-IMP_ID(GDI, "TextOutA", TextOutA, 20) { SET(1); }
-IMP_ID(GDI, "ExtTextOutW", ExtTextOutW, 32) { SET(1); }
+// (dst, x, y, w, h, src, sx, sy, rop): SRCCOPY between two DCs' bitmaps
+IMP_ID(GDI, "BitBlt", BitBlt, 36)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0)), s = gdi::dcs.find(ARG(5));
+	if (d == gdi::dcs.end() || s == gdi::dcs.end()) { SET(1); return; }
+	auto db = gdi::bitmaps.find(d->second.bitmap), sb = gdi::bitmaps.find(s->second.bitmap);
+	if (db == gdi::bitmaps.end() || sb == gdi::bitmaps.end()) { SET(1); return; }
+	int x = (int32_t)ARG(1), y = (int32_t)ARG(2), w = (int32_t)ARG(3), h = (int32_t)ARG(4), sx = (int32_t)ARG(6), sy = (int32_t)ARG(7);
+	for (int yy = 0; yy < h; yy++) for (int xx = 0; xx < w; xx++) gdi::putPixel(db->second, x + xx, y + yy, gdi::getPixel(sb->second, sx + xx, sy + yy));
+	SET(1);
+}
+IMP_ID(GDI, "TextOutA", TextOutA, 20)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	if (d == gdi::dcs.end()) { SET(1); return; }
+	gdi::Metrics m = gdi::metrics(d->second.font);
+	int n = (int)ARG(4);
+	std::vector<int> g(n > 0 ? n : 0);
+	for (int i = 0; i < n; i++) g[i] = gdi::glyphOf(m, guest::load<uint8_t>(ARG(3) + i));
+	if (d->second.bkMode == 2) gdi::fillRect(d->second, (int32_t)ARG(1), (int32_t)ARG(2), (int32_t)ARG(1) + gdi::textWidth(m, g.data(), n), (int32_t)ARG(2) + m.ascent + m.descent, d->second.bk);
+	gdi::drawGlyphs(d->second, (int32_t)ARG(1), (int32_t)ARG(2), g.data(), n, nullptr);
+	SET(1);
+}
+// (hdc, x, y, options, RECT*, string or glyph indices, count, dx*)
+IMP_ID(GDI, "ExtTextOutW", ExtTextOutW, 32)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	if (d == gdi::dcs.end()) { SET(1); return; }
+	uint32_t opt = ARG(3), rc = ARG(4);
+	if ((opt & 2) && rc)   // ETO_OPAQUE
+		gdi::fillRect(d->second, guest::load<int32_t>(rc), guest::load<int32_t>(rc + 4), guest::load<int32_t>(rc + 8), guest::load<int32_t>(rc + 12), d->second.bk);
+	gdi::Metrics m = gdi::metrics(d->second.font);
+	int n = (int)ARG(6);
+	std::vector<int> g(n > 0 ? n : 0);
+	std::vector<int32_t> dx;
+	for (int i = 0; i < n; i++) { uint16_t v = guest::load<uint16_t>(ARG(5) + 2 * i); g[i] = (opt & 0x10) ? v : gdi::glyphOf(m, v); }
+	if (ARG(7)) { dx.resize(g.size()); for (int i = 0; i < n; i++) dx[i] = guest::load<int32_t>(ARG(7) + 4 * i); }
+	gdi::drawGlyphs(d->second, (int32_t)ARG(1), (int32_t)ARG(2), g.data(), n, dx.empty() ? nullptr : dx.data());
+	static int nl = 0;
+	if (nl++ < 10) log("GDI: ExtTextOutW %d,%d opt %x n %d first %u font h %d asc %d", (int32_t)ARG(1), (int32_t)ARG(2), opt, n, n ? (unsigned)guest::load<uint16_t>(ARG(5)) : 0, gdi::fonts.count(d->second.font) ? gdi::fonts[d->second.font].height : 0, m.ascent);
+	SET(1);
+}
 // TEXTMETRICA: 11 LONGs, then 4 chars and 4 bytes
 IMP_ID(GDI, "GetTextMetricsA", GetTextMetricsA, 8)
 {
-	uint32_t m = ARG(1);
-	memset(guest::host(m), 0, 56);
-	int32_t v[11] = {kFontH, kAscent, kFontH - kAscent, 0, 0, kCharW, 2 * kCharW, 400, 0, 96, 96};
-	for (int i = 0; i < 11; i++) guest::store<int32_t>(m + 4 * i, v[i]);
-	guest::store<uint8_t>(m + 44, 32); guest::store<uint8_t>(m + 45, 255); guest::store<uint8_t>(m + 46, '?'); guest::store<uint8_t>(m + 47, ' ');
-	guest::store<uint8_t>(m + 52, 0x06);   // TMPF_VECTOR | TMPF_TRUETYPE
-	guest::store<uint8_t>(m + 53, 1);      // DEFAULT_CHARSET
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	gdi::Metrics m = gdi::metrics(d != gdi::dcs.end() ? d->second.font : 0);
+	int avg = m.f->ok ? gdi::advance(m, gdi::glyphOf(m, 'x')) : (m.ascent + m.descent) / 2;
+	int mx = m.f->ok ? gdi::advance(m, gdi::glyphOf(m, 'W')) : 2 * avg;
+	int weight = 400;
+	if (d != gdi::dcs.end() && gdi::fonts.count(d->second.font)) weight = gdi::fonts[d->second.font].weight;
+	uint32_t o = ARG(1);
+	memset(guest::host(o), 0, 56);
+	int32_t v[11] = {m.ascent + m.descent, m.ascent, m.descent, 0, 0, avg, mx, weight ? weight : 400, 0, 96, 96};
+	for (int i = 0; i < 11; i++) guest::store<int32_t>(o + 4 * i, v[i]);
+	guest::store<uint8_t>(o + 44, 32); guest::store<uint8_t>(o + 45, 255); guest::store<uint8_t>(o + 46, '?'); guest::store<uint8_t>(o + 47, ' ');
+	guest::store<uint8_t>(o + 52, 0x06);   // TMPF_VECTOR | TMPF_TRUETYPE
+	guest::store<uint8_t>(o + 53, 1);      // DEFAULT_CHARSET
 	SET(1);
 }
-IMP_ID(GDI, "GetTextExtentPoint32W", GetTextExtentPoint32W, 16) { guest::store<int32_t>(ARG(3), kCharW * (int32_t)ARG(2)); guest::store<int32_t>(ARG(3) + 4, kFontH); SET(1); }
-IMP_ID(GDI, "GetTextExtentPointI", GetTextExtentPointI, 16) { guest::store<int32_t>(ARG(3), kCharW * (int32_t)ARG(2)); guest::store<int32_t>(ARG(3) + 4, kFontH); SET(1); }
-// glyph index = the character code until a real font is behind this
+IMP_ID(GDI, "GetTextExtentPoint32W", GetTextExtentPoint32W, 16)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	gdi::Metrics m = gdi::metrics(d != gdi::dcs.end() ? d->second.font : 0);
+	int n = (int)ARG(2), w = 0;
+	for (int i = 0; i < n; i++) w += gdi::advance(m, gdi::glyphOf(m, guest::load<uint16_t>(ARG(1) + 2 * i)));
+	guest::store<int32_t>(ARG(3), w); guest::store<int32_t>(ARG(3) + 4, m.ascent + m.descent);
+	SET(1);
+}
+IMP_ID(GDI, "GetTextExtentPointI", GetTextExtentPointI, 16)
+{
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	gdi::Metrics m = gdi::metrics(d != gdi::dcs.end() ? d->second.font : 0);
+	int n = (int)ARG(2), w = 0;
+	for (int i = 0; i < n; i++) w += gdi::advance(m, ARG(1) ? guest::load<uint16_t>(ARG(1) + 2 * i) : 0);
+	guest::store<int32_t>(ARG(3), w); guest::store<int32_t>(ARG(3) + 4, m.ascent + m.descent);
+	SET(1);
+}
+// (hdc, string, count, indices*, flags): GGI_MARK_NONEXISTING_GLYPHS (1) marks missing ones with 0xffff
 IMP_ID(GDI, "GetGlyphIndicesW", GetGlyphIndicesW, 20)
 {
-	for (uint32_t i = 0; i < ARG(2); i++) guest::store<uint16_t>(ARG(3) + 2 * i, guest::load<uint16_t>(ARG(1) + 2 * i));
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	gdi::Metrics m = gdi::metrics(d != gdi::dcs.end() ? d->second.font : 0);
+	for (uint32_t i = 0; i < ARG(2); i++)
+	{
+		int g = gdi::glyphOf(m, guest::load<uint16_t>(ARG(1) + 2 * i));
+		if (!g && (ARG(4) & 1)) g = 0xffff;
+		guest::store<uint16_t>(ARG(3) + 2 * i, (uint16_t)g);
+	}
 	SET(ARG(2));
 }
 // (hdc, first, count, indices*, ABC*): ABC = {int a; uint b; int c}
 IMP_ID(GDI, "GetCharABCWidthsI", GetCharABCWidthsI, 20)
 {
-	for (uint32_t i = 0; i < ARG(2); i++) { uint32_t o = ARG(4) + 12 * i; guest::store<int32_t>(o, 0); guest::store<uint32_t>(o + 4, kCharW); guest::store<int32_t>(o + 8, 0); }
+	std::lock_guard<std::mutex> l(gdi::mu);
+	auto d = gdi::dcs.find(ARG(0));
+	gdi::Metrics m = gdi::metrics(d != gdi::dcs.end() ? d->second.font : 0);
+	for (uint32_t i = 0; i < ARG(2); i++)
+	{
+		int g = ARG(3) ? guest::load<uint16_t>(ARG(3) + 2 * i) : (int)(ARG(1) + i);
+		int adv = gdi::advance(m, g), a = 0, b = adv;
+		if (m.f->ok)
+		{
+			int x0, y0, x1, y1;
+			stbtt_GetGlyphBitmapBox(&m.f->info, g, m.scale, m.scale, &x0, &y0, &x1, &y1);
+			if (x1 > x0) { a = x0; b = x1 - x0 + (m.fakeBold ? 1 : 0); }
+		}
+		uint32_t o = ARG(4) + 12 * i;
+		guest::store<int32_t>(o, a); guest::store<uint32_t>(o + 4, (uint32_t)std::max(1, b)); guest::store<int32_t>(o + 8, adv - a - b);
+	}
 	SET(1);
 }
 
