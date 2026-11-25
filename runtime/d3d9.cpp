@@ -343,7 +343,7 @@ H("IDirect3D9::GetAdapterCount") { SET(1); } END;
 H("IDirect3D9::GetAdapterIdentifier")
 {
 	uint32_t p = ARG(3);
-	memset(guest::host(p), 0, 1104);
+	memset(guest::host(p), 0, 1100);   // sizeof(D3DADAPTER_IDENTIFIER9) exactly: CC3 keeps an object right after it (writing 1104 zeroed its vtable)
 	putStr(p, "nvd3dum.dll");
 	putStr(p + 512, "Android GPU (CC3 native D3D9 layer)");
 	putStr(p + 1024, "\\\\.\\DISPLAY1");
