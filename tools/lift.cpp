@@ -163,6 +163,9 @@ void flagRW(Ins& i)
 	case X86_INS_PUSHFD: i.rd = ALL6; break;
 	case X86_INS_POPFD: i.wr = ALL6; break;
 	case X86_INS_SCASB: case X86_INS_SCASW: case X86_INS_SCASD: case X86_INS_CMPSB: case X86_INS_CMPSW: case X86_INS_CMPSD:
+		// with a rep prefix and ecx = 0 nothing is compared and the flags keep their earlier values ("xor eax,eax;
+		// repz cmpsb; je equal" for two empty strings): the flags before it stay live
+		if (i.x.prefix[0] == X86_PREFIX_REP || i.x.prefix[0] == X86_PREFIX_REPNE) i.rd = ALL6;
 		i.wr = ALL6; break;
 	case X86_INS_COMISS: case X86_INS_UCOMISS: case X86_INS_FCOMI: case X86_INS_FCOMPI: case X86_INS_FUCOMI: case X86_INS_FUCOMPI:
 		i.wr = ALL6; break;
