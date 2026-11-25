@@ -384,11 +384,11 @@ static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
 	int w = gfx::width(), h = gfx::height();
 	if (!list.empty() && w == sw && h == sh) return list;
 	sw = w; sh = h;
-	// Wide screen off: 16:9 steps (the game's list accepts standard aspect ratios only). On: the screen's own shape
-	// only (the list check is let through for those, see game_gate)
+	// standard 4:3 / 16:10 / 16:9 modes (the game's list accepts standard aspect ratios only); with Wide screen on also
+	// the screen's own shape (the list check lets those through, see game_gate)
 	list.clear();
-	if (!rt::config.wideScreen || w < 640 || h < 480 || (double)w / h <= 16.0 / 9.0 + 0.05) list = {{1280, 720}, {1600, 900}, {1920, 1080}, {2048, 1152}, {2240, 1260}, {2560, 1440}};
-	else
+	list = {{1024, 768}, {1280, 720}, {1280, 800}, {1600, 900}, {1680, 1050}, {1920, 1080}, {2048, 1152}, {2240, 1260}, {2560, 1440}};
+	if (rt::config.wideScreen && w >= 640 && h >= 480 && (double)w / h > 16.0 / 9.0 + 0.05)
 	{
 		// modes with the phone screen's own aspect ratio (wide displays), at 720p / 1080p height and native
 		uint32_t nw = (uint32_t)w, nh = (uint32_t)h;

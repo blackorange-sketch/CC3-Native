@@ -494,6 +494,22 @@ std::string commandLine()
 }
 }
 namespace rt { bool verbose() { static bool v = access("/sdcard/cc3_verbose", F_OK) == 0; return v; } }
-// Per-game call hooks of the recompiled code (lifter env CC3_GATES / CC3_HOOKS): none for CC3 yet.
-bool game_gate(CPU*, uint32_t) { return false; }   // true = skip the call
+// Per-game call hooks of the recompiled code (lifter env CC3_GATES / CC3_HOOKS).
+bool game_gate(CPU* c, uint32_t fn)   // true = skip the call (eax = the value given in CC3_GATES)
+{
+	if (fn == gb::ResModeCheck)
+	{
+		// with Wide screen on, the modes of the screen's own shape join the resolution list (the game accepts
+		// standard aspect ratios only); everything else goes through the game's own check
+		if (!rt::config.wideScreen) return false;
+		uint32_t m = guest::load<uint32_t>(c->r[ESP] + 4), bpp = guest::load<uint32_t>(c->r[ESP] + 8);
+		if (m < 0x10000 || bpp < 32) return false;
+		uint32_t w = guest::load<uint32_t>(m), h = guest::load<uint32_t>(m + 4);
+		bool wide = h >= 600 && (double)w / h > 16.0 / 9.0 + 0.05;
+		static int nl = 0;
+		if (wide && nl++ < 8) rt::log("wide screen: resolution list accepts %u x %u", w, h);
+		return wide;
+	}
+	return false;
+}
 void game_hook_after(CPU*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}

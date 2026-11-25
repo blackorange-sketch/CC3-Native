@@ -89,8 +89,8 @@ jobs:
           g++ -O2 -std=c++17 -Icapstone/include tools/lift.cpp tools/lift_pe.cpp capstone/b/libcapstone.a -o lift_pe
           ./analyze game/cnc3game.dat game/cc3 | tee analyze.txt | head -40
           mkdir -p lifted
-          # no CC3_GATES / CC3_HOOKS for CC3 yet (runtime/game_build.h has no game addresses)
-          ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -60
+          # CC3_GATES=addr:pop[:eax]: calls the runtime may skip through game_gate: 44ed42 = resolution list mode check
+          CC3_GATES=44ed42:0:1 ./lift_pe game/cnc3game.dat game/cc3.functions.txt --emit-dir lifted 96 | tee lift-stats.txt | head -60
 
       # Import coverage: every import of the binary should have a host implementation (or a deliberate stub)
       - name: Import coverage
