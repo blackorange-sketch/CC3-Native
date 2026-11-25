@@ -559,9 +559,14 @@ void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2,
 	(void)a1; (void)a2;
 	static int nl = 0;
 	if (nl > 40) return;
+	static uint32_t mapBegin = 0, mapEnd = 0;
 	if (fn == gb::ChunkStreamCtor && ecx)
 	{
 		nl++;
+		{
+			uint32_t f = guest::load<uint32_t>(ecx);
+			if (f && guest::load<uint32_t>(f + 0x10) == 0x00a420b8u) { mapBegin = guest::load<uint32_t>(f + 0x14); mapEnd = guest::load<uint32_t>(f + 0x1c); }
+		}
 		uint32_t file = guest::load<uint32_t>(ecx), size = guest::load<uint32_t>(ecx + 0x14);
 		uint32_t vt = file ? guest::load<uint32_t>(file) : 0;
 		rt::log("hook: chunk stream %08x on file %08x (vtable %08x) size %u (arg %08x)", ecx, file, vt, size, a0);
@@ -595,5 +600,34 @@ void game_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2,
 	{
 		nl++;
 		rt::log("hook: height map %08x parsed -> eax %08x: %d x %d border %d", ecx, c->r[EAX], (int32_t)guest::load<uint32_t>(ecx + 0x14), (int32_t)guest::load<uint32_t>(ecx + 0x18), (int32_t)guest::load<uint32_t>(ecx + 0x1c));
+		// the map file itself (CkMp chunk file in a BufferInputStream): name table, top-level chunks, HeightMapData head
+		static bool dumped = false;
+		if (!dumped && mapBegin && mapEnd > mapBegin + 8 && readableGuest(mapBegin, 8) && guest::load<uint32_t>(mapBegin) == 0x704d6b43u)
+		{
+			dumped = true;
+			uint32_t p = mapBegin + 4, n = guest::load<uint32_t>(p);
+			p += 4;
+			std::map<uint32_t, std::string> names;
+			for (uint32_t i = 0; i < n && i < 4096 && p < mapEnd; i++)
+			{
+				uint8_t len = guest::load<uint8_t>(p);
+				std::string nm((const char*)guest::host(p + 1), len);
+				uint32_t id = guest::load<uint32_t>(p + 1 + len);
+				names[id] = nm;
+				p += 1 + len + 4;
+			}
+			rt::log("hook: map file %u bytes, %u chunk names, chunks from offset %u:", mapEnd - mapBegin, n, p - mapBegin);
+			for (int k = 0; k < 24 && p + 10 <= mapEnd; k++)
+			{
+				uint32_t id = guest::load<uint32_t>(p), sz = guest::load<uint32_t>(p + 6);
+				uint16_t ver = guest::load<uint16_t>(p + 4);
+				std::string nm = names.count(id) ? names[id] : "?";
+				std::string hx;
+				for (uint32_t q = 0; q < 48 && p + 10 + q < mapEnd; q++) { char b[4]; snprintf(b, sizeof b, "%02x", guest::load<uint8_t>(p + 10 + q)); hx += b; }
+				rt::log("hook:   @%u chunk %u '%s' version %u size %u: %s", p - mapBegin, id, nm.c_str(), ver, sz, hx.c_str());
+				if (sz > mapEnd - p) break;
+				p += 10 + sz;
+			}
+		}
 	}
 }
