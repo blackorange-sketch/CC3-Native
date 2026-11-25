@@ -258,6 +258,16 @@ int main(int argc, char** argv)
 
 	};
 	drain();
+	auto endsJmpBytes = [&](uint32_t v) {
+		uint8_t b[7] = {};
+		if (!readVA(v - 7, b, 7)) return false;
+		auto modrm = [](uint8_t m) { return (m & 0x38) == 0x20; };   // ff /4 = jmp r/m32 (b[i] is the byte at v - 7 + i)
+		if (b[4] == 0xff && modrm(b[5]) && (b[5] & 0xc0) == 0x40 && (b[5] & 7) != 4) return true;   // jmp [reg+disp8]
+		if (b[5] == 0xff && modrm(b[6]) && (b[6] & 0xc0) == 0x00 && (b[6] & 7) != 4 && (b[6] & 7) != 5) return true;   // jmp [reg]
+		if (b[1] == 0xff && modrm(b[2]) && ((b[2] & 0xc0) == 0x80 || b[2] == 0x25) && (b[2] & 7) != 4) return true;   // jmp [reg+disp32] / [abs]
+		if (b[3] == 0xff && modrm(b[4]) && (b[4] & 0xc0) == 0x40 && (b[4] & 7) == 4) return true;   // jmp [sib+disp8]
+		return false;
+	};
 	// Immediates that point right after an unconditional jump/ret that has been decoded (any form, also
 	// `jmp [eax+8]`), at an address no decoded
 	// instruction covers, are function pointers too (e.g. `mov [eax], offset fn` where fn follows a short jmp).
@@ -269,21 +279,31 @@ int main(int argc, char** argv)
 		// thunks `mov eax, [ecx]; jmp [eax+N]` are only reached through member-function pointers). After an
 		// unconditional jmp the address may already be decoded as unreachable bytes of the thunk before it: it is
 		// still an entry of its own.
-		auto endsInJmp = [&](uint32_t v) {
-			uint8_t b[7] = {};
-			if (!readVA(v - 7, b, 7)) return false;
-			auto modrm = [](uint8_t m) { return (m & 0x38) == 0x20; };   // ff /4 = jmp r/m32 (b[i] is the byte at v - 7 + i)
-			if (b[4] == 0xff && modrm(b[5]) && (b[5] & 0xc0) == 0x40 && (b[5] & 7) != 4) return true;   // jmp [reg+disp8]
-			if (b[5] == 0xff && modrm(b[6]) && (b[6] & 0xc0) == 0x00 && (b[6] & 7) != 4 && (b[6] & 7) != 5) return true;   // jmp [reg]
-			if (b[1] == 0xff && modrm(b[2]) && ((b[2] & 0xc0) == 0x80 || b[2] == 0x25) && (b[2] & 7) != 4) return true;   // jmp [reg+disp32] / [abs]
-			if (b[3] == 0xff && modrm(b[4]) && (b[4] & 0xc0) == 0x40 && (b[4] & 7) == 4) return true;   // jmp [sib+disp8]
-			return false;
-		};
+		auto endsInJmp = endsJmpBytes;
 		for (uint32_t v : immCand)
 			if (!funcs.count(v) && ((!seenInsn.count(v) && (afterUncond.count(v) || at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2))) || (afterUncond.count(v) && endsInJmp(v))))
 			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
 		if (again) drain();
 	}
+	// Virtual-call thunks (`mov eax, [ecx]; jmp [eax+N]`, `mov eax, [esp+4]; jmp [eax+N]`) between padding or other
+	// thunks: the compiler emits one per member-function pointer to a virtual method, reached only through that
+	// pointer, which may live anywhere (unaligned data, computed). Each costs a few instructions, so take them all.
+	for (auto& sc : secs)
+	{
+		if (!(sc.flags & 0x20000000)) continue;
+		for (uint32_t o = 1; o + 8 < sc.rsize; o++)
+		{
+			const uint8_t* q = &file[sc.raw + o];
+			bool thunk = (q[0] == 0x8b && q[1] == 0x01 && q[2] == 0xff && (q[3] == 0x60 || q[3] == 0xa0 || q[3] == 0x20)) ||
+			             (q[0] == 0x8b && q[1] == 0x44 && q[2] == 0x24 && q[3] == 0x04 && q[4] == 0xff && (q[5] == 0x60 || q[5] == 0xa0 || q[5] == 0x20));
+			if (!thunk) continue;
+			uint32_t v = imageBase + sc.va + o;
+			uint8_t p = q[-1];
+			if (funcs.count(v) || !(p == 0xcc || p == 0xc3 || p == 0x90 || endsJmpBytes(v))) continue;
+			addFunc(v); st["vcall_thunk_seed"]++;
+		}
+	}
+	drain();
 	// Gap fill: a 16-byte aligned address that no decoded instruction covers and that follows padding, a ret or an
 	// indirect `jmp reg` is the start of a function that is only reached through a pointer (e.g. a virtual method).
 	for (bool again = true; again;)
