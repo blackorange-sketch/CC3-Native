@@ -939,6 +939,18 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 	case fxrt::SC_RS:
 		if (info.id < 256) dev.rs[info.id] = value;
 		break;
+	case fxrt::SC_TEXTURE:   // pass state "Texture[n] = <param>" (older effects with shader model 1 pixel shaders: the movie player)
+		if (st.index < 16)
+		{
+			uint32_t t = st.refP >= 0 ? fx.params[st.refP].texObj : 0;
+			dev.tex[st.index] = t ? objectAt(t) : nullptr;
+			static int nl = 0;
+			if (nl++ < 12) log("fx: pass state Texture[%u] = '%s' tex %x", st.index, st.refP >= 0 ? fx.params[st.refP].name.c_str() : "?", t);
+		}
+		break;
+	case fxrt::SC_SAMP:      // pass state sampler states (AddressU[n], MinFilter[n], ...)
+		if (st.index < 16 && info.id < 16) dev.samp[st.index][info.id] = value;
+		break;
 	default: break;
 	}
 }
