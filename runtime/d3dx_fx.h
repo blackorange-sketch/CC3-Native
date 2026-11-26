@@ -90,6 +90,7 @@ struct FxRes   // a state value that is not a plain constant
 };
 struct FxInfo
 {
+	uint64_t hash = 0;   // FNV-1a of the effect blob (names it: tools/fxaudit prints the same hash per .fxo)
 	~FxInfo();   // drops itself as the source of shared parameters (d3d9_fx.cpp)
 	std::vector<FxParam> params;
 	std::vector<FxTech> techs;

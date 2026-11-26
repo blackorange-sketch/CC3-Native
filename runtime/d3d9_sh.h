@@ -73,6 +73,7 @@ struct Reg
 	int type = 0, num = 0;
 	bool rel = false;
 	int relComp = 0;
+	bool relLoop = false;   // relative to the loop counter aL instead of a0
 	uint32_t tok = 0;
 };
 inline int regType(uint32_t t) { return (int)(((t >> 28) & 7) | ((t >> 8) & 0x18)); }
@@ -162,7 +163,8 @@ struct Translator
 			si.numC = std::max(si.numC, r.num + 1);
 			si.numCDirect = std::max(si.numCDirect, r.num + 1);
 			if (r.rel) { si.numC = 256; si.relC = true; }
-			if (r.rel) snprintf(b, sizeof b, "%sc[%d + int(a0.%s)]", si.isVs ? "v" : "p", r.num, compName(r.relComp).c_str());
+			if (r.rel && r.relLoop) snprintf(b, sizeof b, "%sc[%d + aL]", si.isVs ? "v" : "p", r.num);
+			else if (r.rel) snprintf(b, sizeof b, "%sc[%d + int(a0.%s)]", si.isVs ? "v" : "p", r.num, compName(r.relComp).c_str());
 			else snprintf(b, sizeof b, "%sc[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
 		}
@@ -191,6 +193,7 @@ struct Translator
 			if (defB.count(r.num)) return defB[r.num] ? "true" : "false";
 			snprintf(b, sizeof b, "%scb[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
+		case 15: return "vec4(float(aL))";   // loop counter
 		case 17:
 			if (r.num == 0) { si.usesFragCoord = true; return "vPos"; }
 			si.usesFace = true;
@@ -217,7 +220,7 @@ struct Translator
 			if (p >= nw) return fail("truncated rel");
 			uint32_t a = w[p++];
 			r.relComp = (a >> 16) & 3;   // swizzle x of address token
-			if (regType(a) == 15) r.relComp = 0;
+			if (regType(a) == 15) { r.relComp = 0; r.relLoop = true; }
 		}
 		std::string base = regName(r, false);
 		int swz = (t >> 16) & 0xff;
@@ -511,6 +514,42 @@ struct Translator
 				line("if (bool((" + a + ").x)) {");
 				indent++;
 				ifDepth++;
+				break;
+			}
+			case 41:   // ifc: if with a comparison (ctrl bits)
+			case 45:   // breakc
+			{
+				if (!S(a) || !S(b)) return false;
+				static const char* const cmp[] = {"?", ">", "==", ">=", "<", "!=", "<="};
+				int cc = (int)((tok >> 16) & 7);
+				if (cc < 1 || cc > 6) return fail("comparison");
+				std::string cond = "(" + a + ").x " + cmp[cc] + " (" + b + ").x";
+				if (op == 41) { line("if (" + cond + ") {"); indent++; ifDepth++; }
+				else line("if (" + cond + ") break;");
+				break;
+			}
+			case 44: line("break;"); break;
+			case 27:   // loop aL, i#: count, start, step
+			{
+				std::string l, ic;
+				if (!S(l) || !S(ic)) return false;
+				char buf[256];
+				snprintf(buf, sizeof buf, "for (int lp%d = 0, aL = int((%s).y); lp%d < int((%s).x); lp%d++, aL += int((%s).z)) {", repN, ic.c_str(), repN, ic.c_str(), repN, ic.c_str());
+				repN++;
+				line(buf);
+				indent++;
+				break;
+			}
+			case 29: indent--; line("}"); break;
+			case 67:   // texbem (ps_1_x): bump environment map lookup; the bump matrix (a texture stage state) is 0 by default
+			{
+				if (!ps1 || !parseDst(q, d) || !S(a)) return false;
+				int sn = (int)(w[p + 1] & 0x7ff);
+				if (sn >= 16) return fail("sampler idx");
+				if (!si.samplerType[sn]) si.samplerType[sn] = 2;
+				char sb[16];
+				snprintf(sb, sizeof sb, "s%d", sn);
+				assign(d, std::string("texture(") + sb + ", (" + d.name + ").xy)");
 				break;
 			}
 			case 42: indent--; line("} else {"); indent++; break;

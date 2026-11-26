@@ -1118,9 +1118,25 @@ H("ID3DXEffect::Begin")
 	if (fx) { gPass.fx = fx; gPass.tech = fx->current; gPass.pass = 0; gPass.active = false; }
 	SET(0);
 } END;
+// which effects and techniques the game uses: passes begun + commits per effect/technique, logged once a minute
+static void noteFxUse(FxInfo* fx)
+{
+	static std::map<std::pair<uint64_t, std::string>, uint32_t> use;
+	static auto last = std::chrono::steady_clock::now();
+	if (fx && fx->current < fx->techs.size()) use[{fx->hash, fx->techs[fx->current].name}]++;
+	auto now = std::chrono::steady_clock::now();
+	if (now - last < std::chrono::seconds(60)) return;
+	last = now;
+	std::string o;
+	char b[96];
+	for (auto& kv : use) { snprintf(b, sizeof b, " %08llx.%s:%u", (unsigned long long)(kv.first.first >> 32), kv.first.second.c_str(), kv.second); o += b; }
+	log("fx use (60 s):%s", o.c_str());
+	use.clear();
+}
 H("ID3DXEffect::BeginPass")
 {
 	FxInfo* fx = F(o);
+	noteFxUse(fx);
 	if (fx && fx->current < fx->techs.size() && ARG(1) < fx->techs[fx->current].passes.size())
 	{
 		gPass.fx = fx; gPass.tech = fx->current; gPass.pass = ARG(1); gPass.active = true;
@@ -1128,7 +1144,7 @@ H("ID3DXEffect::BeginPass")
 	}
 	SET(0);
 } END;
-H("ID3DXEffect::CommitChanges") { fxApplyPass(o); SET(0); } END;
+H("ID3DXEffect::CommitChanges") { noteFxUse(F(o)); fxApplyPass(o); SET(0); } END;
 H("ID3DXEffect::EndPass") { SET(0); } END;
 H("ID3DXEffect::End") { gPass.active = false; SET(0); } END;
 H("ID3DXEffect::OnLostDevice") { SET(0); } END;

@@ -52,7 +52,9 @@ int main(int argc, char** argv)
 		std::ifstream f(path, std::ios::binary);
 		std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), {});
 		FxInfo fx;
-		printf("== %s\n", name.c_str());
+		uint64_t fh = 1469598103934665603ull;
+		for (uint8_t ch : d) { fh ^= ch; fh *= 1099511628211ull; }
+		printf("== %s (hash %08llx)\n", name.c_str(), (unsigned long long)(fh >> 32));
 		if (!parseEffect(d.data(), d.size(), fx)) { issue(name, "effect does not parse"); continue; }
 		fxrt::initParams(fx);
 		for (auto& pp : fx.params) for (auto& sm : pp.smp) smpUse[sm.op][sm.v].insert(name);

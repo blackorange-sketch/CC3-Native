@@ -801,11 +801,17 @@ static void createEffect(CPU* c, uint32_t src, uint32_t n, uint32_t skipStr, uin
 	d3d::Obj* fx = d3d::newObj(d3d::IEffect);
 	{
 		auto info = std::make_shared<d3d::FxInfo>();
+		{
+			uint64_t h = 1469598103934665603ull;
+			const uint8_t* b = (const uint8_t*)guest::host(src);
+			for (uint32_t k = 0; k < n; k++) { h ^= b[k]; h *= 1099511628211ull; }
+			info->hash = h;
+		}
 		if (d3d::parseEffect((const uint8_t*)guest::host(src), n, *info))
 		{
 			std::string tl;
 			for (auto& t : info->techs) tl += (tl.empty() ? "" : ",") + t.name + "/" + std::to_string(t.passes.size());
-			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u", info->params.size(), info->techs.size(), tl.c_str(), info->base);
+			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u, hash %016llx", info->params.size(), info->techs.size(), tl.c_str(), info->base, (unsigned long long)info->hash);
 			d3d::fxrt::initParams(*info);
 			if (skipStr)
 			{
