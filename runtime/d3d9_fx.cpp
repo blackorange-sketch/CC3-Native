@@ -513,6 +513,24 @@ H("ID3DXEffect::SetValue")
 	}
 	SET(0);
 } END;
+// SetRawValue(param, data, byteOffset, bytes): the parameter's own data from the given byte (CC3: bone palettes)
+H("ID3DXEffect::SetRawValue")
+{
+	PRef r = refOfSet(o, ARG(1));
+	if (r.valid() && ARG(2) && r.ty->cls != 4)
+	{
+		uint32_t start = std::min<uint32_t>(r.off + ARG(3) / 4, (uint32_t)r.p->val.size());
+		uint32_t n = std::min<uint32_t>(ARG(4) / 4, (uint32_t)r.p->val.size() - start);
+		if (n)
+		{
+			memcpy(r.p->val.data() + start, guest::host(ARG(2)), 4ull * n);
+			r.p->ver = fxNextVer();
+		}
+		static int nl = 0;
+		if (nl++ < 10) log("fx: SetRawValue '%s' offset %u bytes %u (%u values of %zu)", r.p->name.c_str(), ARG(3), ARG(4), n, r.p->val.size());
+	}
+	SET(0);
+} END;
 H("ID3DXEffect::SetBool") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2) ? 1 : 0; writeVals(r, &v, 1, 1); } SET(0); } END;
 H("ID3DXEffect::SetInt") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 2); } SET(0); } END;
 H("ID3DXEffect::SetFloat")
@@ -1072,7 +1090,7 @@ void fxApplyPass(Obj* o)
 				for (auto& w : po.b) if (w.first / 4 < 16) bregs[w.first / 4] = w.second != 0;
 			}
 			static int npl = 0;
-			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs", okp ? "ok" : "FAILED", po.f.size(), po.b.size()); }
+			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs (reason %x, parsed %d)", okp ? "ok" : "FAILED", po.f.size(), po.b.size(), okp ? 0u : fxrt::presFail(), (int)prog.ok); }
 			static bool presDiag = access("/sdcard/cc3_fxdiag", F_OK) == 0;
 			static int npd = 0;
 			if (presDiag && npd < 40 && okp)

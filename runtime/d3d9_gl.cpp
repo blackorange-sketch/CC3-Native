@@ -1016,7 +1016,16 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		if (!name)
 		{
 			if (!t) gHNoTex++;
-			else { gHTexFail++; gHNoTexFmt[texOwner(t)->fmt]++; }
+			else
+			{
+				gHTexFail++; gHNoTexFmt[texOwner(t)->fmt]++;
+				static int nf = 0;
+				Obj* ow = texOwner(t);
+				if (nf++ < 12)
+					log("GL: texture not usable: sampler %d wants %s, texture iface %d fmt %u %ux%ux%u levels %u data %08x size %u released %d ref %d", i,
+					    target == GL_TEXTURE_CUBE_MAP ? "cube" : target == GL_TEXTURE_3D ? "3D" : "2D", (int)ow->iface, ow->fmt, ow->w, ow->h, ow->d,
+					    ow->levels, ow->data, ow->size, (int)ow->released, ow->ref);
+			}
 		}
 		GLuint bindName = name ? name : dummyTex(target);
 		{

@@ -251,6 +251,8 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	return pp;
 }
 // `fill` provides the input register file (4 doubles per register) for the CTAB constants.
+// why the last pre-shader failed: an unknown opcode, 0x10000/0x10001 = an indexed input/output operand
+inline uint32_t& presFail() { static thread_local uint32_t v = 0; return v; }
 // Executes a parsed pre-shader on a prepared input register file (pp.nIn doubles).
 inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, PresOut& res)
 {
@@ -284,12 +286,14 @@ inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, Pre
 		q += 8;
 		if (nin > 8) return false;
 		uint32_t at[8] = {}, ai[8] = {};
-		for (uint32_t k = 0; k < nin; k++) { if (fu(q)) return false; /* indexed operands: not seen */ at[k] = fu(q + 4); ai[k] = fu(q + 8); q += 12; }
-		if (fu(q)) return false;
+		for (uint32_t k = 0; k < nin; k++) { if (fu(q)) { presFail() = 0x10000; return false; } /* indexed operands */ at[k] = fu(q + 4); ai[k] = fu(q + 8); q += 12; }
+		if (fu(q)) { presFail() = 0x10001; return false; }
 		uint32_t ot = fu(q + 4), oi = fu(q + 8);
 		q += 12;
 		uint32_t opc = (tok >> 20) & 0x7ff, comps = tok & 0xffff;
 		bool scalar = (tok & 0x10000) != 0;
+		// 0xa0x: the two-operand ops (min .. div) with a scalar first operand (as D3DX writes them for "s * v")
+		if (opc >= 0xa00 && opc <= 0xa08) { opc -= 0x800; scalar = true; }
 		if (comps == 0) comps = 1;
 		if (comps > 16) return false;
 		if (opc == 0x500)   // dot: all components -> one value
@@ -329,7 +333,8 @@ inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, Pre
 			case 0x208: r = a[0] / a[1]; break;
 			case 0x300: r = a[0] >= 0 ? a[1] : a[2]; break;
 			case 0x301: r = a[0] != 0 ? a[1] : a[2]; break;
-			default: return false;
+			case 0x502: r = 0.0; break;   // noise (texture shaders only)
+			default: presFail() = opc; return false;
 			}
 			outv[j] = r;
 		}
