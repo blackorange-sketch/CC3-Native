@@ -791,6 +791,7 @@ IMP_ID(DX, "D3DXVec3CatmullRom", D3DXVec3CatmullRom, 24)
 // D3DXCreateEffectEx / D3DXCreateEffect (CC3, d3dx9_29) / D3DXCreateEffectFromFileA share this: a compiled effect blob
 static void createEffect(CPU* c, uint32_t src, uint32_t n, uint32_t skipStr, uint32_t ppEffect, uint32_t ppErrors)
 {
+	rt::fxExportFlush();   // all .big files are indexed by now
 	static int count;
 	std::string path = config.dataRoot + "/effects";
 	mkdir(path.c_str(), 0777);

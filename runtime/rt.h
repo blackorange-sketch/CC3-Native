@@ -73,6 +73,10 @@ uint32_t grealloc(uint32_t p, uint32_t size);
 uint32_t gsize(uint32_t p);
 uint32_t vmAlloc(uint32_t size);
 bool vmRelease(uint32_t addr);
+// compiled effects collected from the .big files, written once to /sdcard/cc3_shaders.zip (offline effect audit)
+bool fxExportWanted();
+void fxExportAdd(const std::string& name, std::vector<uint8_t>&& data);
+void fxExportFlush();
 void setHeapReclaim(void (*fn)());   // called (outside the heap lock) when the malloc arena is about to run out   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
 
 // ---- strings

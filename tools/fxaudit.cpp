@@ -15,6 +15,9 @@
 #include <regex>
 #include <sys/stat.h>
 using namespace d3d;
+// the runtime's destructor lives in d3d9_fx.cpp (shared parameter groups); nothing to release in this tool
+FxInfo::~FxInfo() {}
+namespace rt { Config config; }
 
 static int issues = 0;
 static std::map<uint32_t, std::map<uint32_t, std::set<std::string>>> smpUse;

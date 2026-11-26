@@ -840,6 +840,13 @@ static void scanBig(int fd, const std::string& name)
 			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
 				if (FILE* o = fopen(("/sdcard/cc3_dump/" + base).c_str(), "wb")) { fwrite(buf.data(), 1, sz, o); fclose(o); log("big %s: dumped %s (%u bytes)", name.c_str(), base.c_str(), sz); }
 		}
+		// every compiled effect the game will use (the first big that has a name wins, as in the game): exported once
+		// to /sdcard/cc3_shaders.zip for the offline effect audit (tools/fxaudit)
+		if (ln.compare(0, 17, "shaders\\compiled\\") == 0 && ln.size() > 4 && ln.compare(ln.size() - 4, 4, ".fxo") == 0 && sz < (4u << 20) && rt::fxExportWanted())
+		{
+			std::vector<uint8_t> buf(sz);
+			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz) rt::fxExportAdd(ln.substr(17), std::move(buf));
+		}
 		static int shownMap = 0;
 		if (ln.find("black12") != std::string::npos && shownMap++ < 40)
 			log("big %s: map entry [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
@@ -1164,5 +1171,74 @@ int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
 	std::unique_lock<std::mutex> l(waitMu);
 	waitOn(l, objs.data(), (int)objs.size(), ms, ready);
 	return hit;
+}
+}
+
+// ---- effect export (offline audit) ----
+namespace rt
+{
+static std::mutex fxMu;
+static std::map<std::string, std::vector<uint8_t>> fxFiles;
+static bool fxDone = false;
+static const char* kFxZip = "/sdcard/cc3_shaders.zip";
+bool fxExportWanted()
+{
+	static int want = -1;
+	if (want < 0) want = access(kFxZip, F_OK) != 0;
+	return want && !fxDone;
+}
+void fxExportAdd(const std::string& name, std::vector<uint8_t>&& data)
+{
+	std::lock_guard<std::mutex> l(fxMu);
+	if (!fxDone && !fxFiles.count(name)) fxFiles.emplace(name, std::move(data));
+}
+static uint32_t crc32of(const uint8_t* p, size_t n)
+{
+	static uint32_t t[256];
+	if (!t[1]) for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1; t[i] = c; }
+	uint32_t c = 0xffffffffu;
+	for (size_t i = 0; i < n; i++) c = t[(c ^ p[i]) & 255] ^ (c >> 8);
+	return c ^ 0xffffffffu;
+}
+// writes the collected effects as a stored (uncompressed) zip; called once, when the game creates its first effect
+void fxExportFlush()
+{
+	std::lock_guard<std::mutex> l(fxMu);
+	if (fxDone) return;
+	fxDone = true;
+	if (fxFiles.empty()) return;
+	std::string tmp = std::string(kFxZip) + ".part";
+	FILE* f = fopen(tmp.c_str(), "wb");
+	if (!f) { log("fx export: cannot write %s", kFxZip); fxFiles.clear(); return; }
+	auto w16 = [&](std::vector<uint8_t>& v, uint32_t x) { v.push_back(x & 255); v.push_back(x >> 8 & 255); };
+	auto w32 = [&](std::vector<uint8_t>& v, uint32_t x) { for (int k = 0; k < 4; k++) v.push_back(x >> (8 * k) & 255); };
+	std::vector<uint8_t> central;
+	uint32_t offset = 0, n = 0;
+	for (auto& kv : fxFiles)
+	{
+		const std::string& nm = kv.first;
+		const std::vector<uint8_t>& d = kv.second;
+		uint32_t crc = crc32of(d.data(), d.size());
+		std::vector<uint8_t> h;
+		w32(h, 0x04034b50); w16(h, 10); w16(h, 0); w16(h, 0); w16(h, 0); w16(h, 0x21);
+		w32(h, crc); w32(h, (uint32_t)d.size()); w32(h, (uint32_t)d.size()); w16(h, (uint32_t)nm.size()); w16(h, 0);
+		h.insert(h.end(), nm.begin(), nm.end());
+		fwrite(h.data(), 1, h.size(), f);
+		fwrite(d.data(), 1, d.size(), f);
+		w32(central, 0x02014b50); w16(central, 20); w16(central, 10); w16(central, 0); w16(central, 0); w16(central, 0); w16(central, 0x21);
+		w32(central, crc); w32(central, (uint32_t)d.size()); w32(central, (uint32_t)d.size()); w16(central, (uint32_t)nm.size());
+		w16(central, 0); w16(central, 0); w16(central, 0); w16(central, 0); w32(central, 0); w32(central, offset);
+		central.insert(central.end(), nm.begin(), nm.end());
+		offset += (uint32_t)(h.size() + d.size());
+		n++;
+	}
+	std::vector<uint8_t> end;
+	w32(end, 0x06054b50); w16(end, 0); w16(end, 0); w16(end, n); w16(end, n); w32(end, (uint32_t)central.size()); w32(end, offset); w16(end, 0);
+	fwrite(central.data(), 1, central.size(), f);
+	fwrite(end.data(), 1, end.size(), f);
+	bool ok = fclose(f) == 0;
+	if (ok) rename(tmp.c_str(), kFxZip);
+	log("fx export: %u effects (%u KiB) -> %s%s", n, offset >> 10, kFxZip, ok ? "" : " FAILED");
+	fxFiles.clear();
 }
 }
