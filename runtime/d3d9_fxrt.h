@@ -174,6 +174,7 @@ struct PresOut
 struct PresProg
 {
 	bool ok = false;
+	uint32_t fail = 0;   // why parsing failed (presFail codes)
 	std::vector<d3d::CtabConst> ctab;
 	std::vector<double> lit;
 	const uint8_t* fxlcP = nullptr; size_t fxlcN = 0;
@@ -187,6 +188,9 @@ inline uint64_t presSig(const uint8_t* b, size_t n)
 	for (size_t i = 0; i < n; i += step) h = (h ^ b[i]) * 1099511628211ull;
 	return h;
 }
+// why the last pre-shader failed: an unknown opcode, 0x10000/0x10001 = an indexed input/output operand,
+// 0x2xxxx = not an FX pre-shader (low bits: its version), 0x3/0x4/0x5xxxx = token / no FXLC / operand count
+inline uint32_t& presFail() { static thread_local uint32_t v = 0; return v; }
 // Parses a pre-shader once (keyed by its address: shader and effect blobs live as long as the program runs).
 inline const PresProg& presProg(const uint8_t* blob, size_t n)
 {
@@ -198,7 +202,7 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	pp = PresProg();
 	pp.n = n; pp.sig = sig;
 	auto u = [&](size_t p) { uint32_t v = 0; if (p + 4 <= n) memcpy(&v, blob + p, 4); return v; };
-	if (n < 8 || (u(0) & 0xffffff00u) != 0x46580200) return pp;
+	if (n < 8 || (u(0) >> 16) != 0x4658) { pp.fail = presFail() = 0x20000 | (n >= 4 ? (u(0) & 0xffff) : 0); return pp; }   // 'FX' + any version
 	size_t p = 4;
 	const uint8_t* ctabP = nullptr; size_t ctabN = 0;
 	const uint8_t* clitP = nullptr; size_t clitN = 0;
@@ -206,7 +210,7 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	{
 		uint32_t t = u(p);
 		if (t == 0xffff) break;
-		if ((t & 0xffff) != 0xfffe) return pp;
+		if ((t & 0xffff) != 0xfffe) { pp.fail = presFail() = 0x30000; return pp; }
 		size_t len = (size_t)(t >> 16) * 4;
 		if (p + 4 + len > n) return pp;
 		uint32_t tag = u(p + 4);
@@ -217,7 +221,7 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 		else if (tag == 0x434c5846) { pp.fxlcP = body; pp.fxlcN = bl; }
 		p += 4 + len;
 	}
-	if (!pp.fxlcP) return pp;
+	if (!pp.fxlcP) { pp.fail = presFail() = 0x40000; return pp; }
 	if (ctabP) shdr::parseCtab(ctabP, ctabN, pp.ctab);
 	if (clitP && clitN >= 4)
 	{
@@ -234,7 +238,7 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	{
 		uint32_t tok = fu(q), nin = fu(q + 4);
 		q += 8;
-		if (nin > 8) return pp;
+		if (nin > 8) { pp.fail = presFail() = 0x50000 | nin; return pp; }
 		uint32_t comps = std::max(1u, tok & 0xffff);
 		for (uint32_t k = 0; k <= nin; k++)
 		{
@@ -251,8 +255,6 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	return pp;
 }
 // `fill` provides the input register file (4 doubles per register) for the CTAB constants.
-// why the last pre-shader failed: an unknown opcode, 0x10000/0x10001 = an indexed input/output operand
-inline uint32_t& presFail() { static thread_local uint32_t v = 0; return v; }
 // Executes a parsed pre-shader on a prepared input register file (pp.nIn doubles).
 inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, PresOut& res)
 {

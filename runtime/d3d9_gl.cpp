@@ -976,6 +976,38 @@ static void healthReport()
 	gHNoTex = gHTexFail = gHNoProg = 0; gHNoTexFmt.clear(); gHState.clear();
 }
 static int activeUnit = -1;
+// A 2D texture bound to a cube sampler (CC3's environment-map slot gets a plain 128x128 DXT1 texture: D3D9 drivers
+// sample something; GL gives black): a cube with that image on every face, rebuilt when the texture changes.
+static GLuint cubeFrom2D(Obj* t)
+{
+	struct Entry { GLuint name = 0; uint32_t ver = ~0u; };
+	static std::unordered_map<Obj*, Entry> cache;
+	Entry& e = cache[t];
+	if (e.name && e.ver == t->ver) return e.name;
+	if (!t->data || !t->w || !t->h) return 0;
+	uint32_t sz = std::min(t->w, t->h);
+	std::vector<uint8_t> rgba;
+	expandLevel(t->fmt, (const uint8_t*)guest::host(t->data + t->levelOff[0]), t->w, t->h, rgba);
+	if (rgba.size() < (size_t)t->w * t->h * 4) return 0;
+	if (sz != t->w)   // keep the top-left square, rows of the full width
+	{
+		std::vector<uint8_t> sq((size_t)sz * sz * 4);
+		for (uint32_t y = 0; y < sz; y++) memcpy(&sq[(size_t)y * sz * 4], &rgba[(size_t)y * t->w * 4], (size_t)sz * 4);
+		rgba.swap(sq);
+	}
+	if (!e.name) glGenTextures(1, &e.name);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, e.name);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	for (int f = 0; f < 6; f++) glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, sz, sz, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+	glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	e.ver = t->ver;
+	static int nl = 0;
+	if (nl++ < 4) log("GL: 2D texture fmt %u %ux%u bound to a cube sampler - stand-in cube %u", t->fmt, t->w, t->h, e.name);
+	return e.name;
+}
+
 void bindSamplers(Prog* p, ShaderObj* ps)
 {
 	// make every sampled texture current first: an upload binds on the active unit, which would otherwise
@@ -998,7 +1030,8 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		}
 		GLuint name = 0;
 		bool noFilter = false;
-		if (t && targetOf(texOwner(t)) == target)
+		if (t && target == GL_TEXTURE_CUBE_MAP && texOwner(t)->iface == ITexture) name = cubeFrom2D(texOwner(t));
+		else if (t && targetOf(texOwner(t)) == target)
 		{
 			name = ensureTexture(t);
 			{

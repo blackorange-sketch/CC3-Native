@@ -1090,7 +1090,7 @@ void fxApplyPass(Obj* o)
 				for (auto& w : po.b) if (w.first / 4 < 16) bregs[w.first / 4] = w.second != 0;
 			}
 			static int npl = 0;
-			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs (reason %x, parsed %d)", okp ? "ok" : "FAILED", po.f.size(), po.b.size(), okp ? 0u : fxrt::presFail(), (int)prog.ok); }
+			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs (reason %x, parsed %d)", okp ? "ok" : "FAILED", po.f.size(), po.b.size(), okp ? 0u : (prog.ok ? fxrt::presFail() : prog.fail), (int)prog.ok); }
 			static bool presDiag = access("/sdcard/cc3_fxdiag", F_OK) == 0;
 			static int npd = 0;
 			if (presDiag && npd < 40 && okp)
