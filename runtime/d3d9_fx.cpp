@@ -498,7 +498,9 @@ H("ID3DXEffect::SetValue")
 		{
 			if (r.p->type >= 5 && r.p->type <= 9)
 			{
-				r.p->texObj = guest::load<uint32_t>(ARG(2));
+				uint32_t nt = guest::load<uint32_t>(ARG(2));
+				holdRef(r.p->texObj ? objectAt(r.p->texObj) : nullptr, nt ? objectAt(nt) : nullptr);
+				r.p->texObj = nt;
 				static int nl = 0;
 				if (nl++ < 40) log("fx: SetValue texture '%s' -> %x", r.p->name.c_str(), r.p->texObj);
 			}
@@ -665,7 +667,7 @@ H("ID3DXEffect::SetMatrixTransposePointerArray") { setMatrices(c, o, true, true,
 H("ID3DXEffect::SetTexture")
 {
 	PRef r = refOfSet(o, ARG(1));
-	if (r.valid()) r.p->texObj = ARG(2);
+	if (r.valid()) { holdRef(r.p->texObj ? objectAt(r.p->texObj) : nullptr, ARG(2) ? objectAt(ARG(2)) : nullptr); r.p->texObj = ARG(2); }
 	{
 		static int nl = 0;
 		if (nl++ < 40) log("fx: SetTexture handle %x valid %d name '%s' tex %x", ARG(1), (int)r.valid(), r.valid() ? r.p->name.c_str() : "", ARG(2));

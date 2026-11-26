@@ -43,7 +43,7 @@ H("IDirect3DDevice9::GetSamplerState") { uint32_t s = ARG(1), t = ARG(2); if (AR
 H("IDirect3DDevice9::SetTexture")
 {
 	uint32_t s = ARG(1);
-	if (s < 16) dev.tex[s] = ARG(2) ? objectAt(ARG(2)) : nullptr;
+	if (s < 16) { Obj* n = ARG(2) ? objectAt(ARG(2)) : nullptr; holdRef(dev.tex[s], n); dev.tex[s] = n; }
 	{
 		static int nl = 0;
 		if (ARG(2) && nl++ < 60) log("d3d9: SetTexture stage %u tex %x -> %p", s, ARG(2), (void*)dev.tex[s < 16 ? s : 0]);

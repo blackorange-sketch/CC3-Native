@@ -175,6 +175,7 @@ struct PresProg
 {
 	bool ok = false;
 	uint32_t fail = 0;   // why parsing failed (presFail codes)
+	bool indexed = false; // has relative-addressed operands
 	std::vector<d3d::CtabConst> ctab;
 	std::vector<double> lit;
 	const uint8_t* fxlcP = nullptr; size_t fxlcN = 0;
@@ -242,6 +243,8 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 		uint32_t comps = std::max(1u, tok & 0xffff);
 		for (uint32_t k = 0; k <= nin; k++)
 		{
+			// operand: flag, [index table, index offset when the flag is set: relative addressing], table, offset
+			if (fu(q)) { pp.indexed = true; q += 8; }
 			uint32_t t = fu(q + 4), idx = fu(q + 8);
 			q += 12;
 			size_t top = (size_t)idx + comps + 1;
@@ -288,10 +291,18 @@ inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, Pre
 		q += 8;
 		if (nin > 8) return false;
 		uint32_t at[8] = {}, ai[8] = {};
-		for (uint32_t k = 0; k < nin; k++) { if (fu(q)) { presFail() = 0x10000; return false; } /* indexed operands */ at[k] = fu(q + 4); ai[k] = fu(q + 8); q += 12; }
-		if (fu(q)) { presFail() = 0x10001; return false; }
-		uint32_t ot = fu(q + 4), oi = fu(q + 8);
-		q += 12;
+		// relative addressing: the register offset moves by 4 per unit of the index register's value
+		auto operand = [&](uint32_t& t, uint32_t& idx) {
+			int64_t shift = 0;
+			if (fu(q)) { shift = 4 * (int64_t)std::lrint(rd(fu(q + 4), fu(q + 8))); q += 8; }
+			t = fu(q + 4);
+			int64_t v = (int64_t)fu(q + 8) + shift;
+			idx = v < 0 ? 0 : (uint32_t)v;
+			q += 12;
+		};
+		for (uint32_t k = 0; k < nin; k++) operand(at[k], ai[k]);
+		uint32_t ot, oi;
+		operand(ot, oi);
 		uint32_t opc = (tok >> 20) & 0x7ff, comps = tok & 0xffff;
 		bool scalar = (tok & 0x10000) != 0;
 		// 0xa0x: the two-operand ops (min .. div) with a scalar first operand (as D3DX writes them for "s * v")

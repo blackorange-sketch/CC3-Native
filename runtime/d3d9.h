@@ -59,6 +59,7 @@ using Handler = void (*)(CPU*, Obj*);
 struct Reg { Reg(const char* name, Handler h); };
 Obj* objectAt(uint32_t addr);
 void noteReleased(Obj* o);                 // refcount hit zero
+void holdRef(Obj* oldO, Obj* newO);         // D3D's own reference: device / effect texture slots
 std::vector<Obj*> takeReleased();          // hand the queue to the renderer (which frees GL names and storage)
 void requeueReleased(Obj* o);
 Obj* newObj(Iface i);

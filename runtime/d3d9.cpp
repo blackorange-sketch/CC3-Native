@@ -203,6 +203,15 @@ Obj* objectAtSlow(uint32_t addr)
 // Objects whose refcount reached zero. Their storage is reclaimed by the renderer a while later, and only
 // if they were not drawn with in the meantime (the game sometimes relies on references held elsewhere).
 static std::vector<Obj*> releasedQ;
+// A reference D3D itself keeps (a texture set on the device or on an effect parameter): taken on the new object,
+// dropped on the old one. Games release their own reference right after setting a texture; without this the
+// texture counted as released while still in use and was reclaimed (textures flickering and vanishing).
+void holdRef(Obj* oldO, Obj* newO)
+{
+	if (oldO == newO) return;
+	if (newO) newO->ref++;
+	if (oldO && --oldO->ref <= 0) noteReleased(oldO);
+}
 void noteReleased(Obj* o)
 {
 	if (o->released) return;

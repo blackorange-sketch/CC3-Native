@@ -2950,9 +2950,9 @@ static void reapReleased(uint32_t frame)
 		if (o->ref > 0) { o->released = false; continue; }                       // referenced again
 		bool bound = o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
 		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
-		// released objects normally wait a while (the game may still draw them in a frame or two); when the guest heap
-		// fills up (CC3 reloads every texture when the settings change), only the frames still in flight are kept
-		uint32_t keep = pressure ? 3 : 1800;
+		// released objects normally wait a while (the game may still draw them for a while); when the guest heap
+		// fills up (CC3 reloads every texture when the settings change), only a few seconds
+		uint32_t keep = pressure ? 120 : 1800;
 		if (bound || frame - o->lastUse < keep || o->lastUse > frame) { requeueReleased(o); continue; }
 		if (o->glTex) { glDeleteTextures(1, &o->glTex); o->glTex = 0; gFboDirty = true; gTexBindDirty = true; }
 		if (o->glBuf) { glDeleteBuffers(1, &o->glBuf); o->glBuf = 0; invalidateAttribCache(); }
