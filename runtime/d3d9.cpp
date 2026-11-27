@@ -234,6 +234,34 @@ std::string objStats()
 	char b[32];
 	for (int i = 0; i < INumIfaces; i++)
 		if (uint32_t n = gMade[i].load(std::memory_order_relaxed)) { snprintf(b, sizeof b, "%s%s %u", r.empty() ? "" : ", ", nm[i], n); r += b; }
+	// alive now, per kind: count (released ones waiting to be freed), MiB of guest data
+	uint32_t cnt[INumIfaces] = {}, rel[INumIfaces] = {};
+	uint64_t bytes[INumIfaces] = {};
+	std::map<std::string, uint32_t> texShapes;   // textures the game holds: shape/levels/format -> count
+	{
+		std::lock_guard<std::mutex> l(objMu);
+		for (auto& kv : objs)
+		{
+			Obj* o = kv.second;
+			cnt[o->iface]++;
+			if (o->released || o->ref <= 0) rel[o->iface]++;
+			if (o->ownsData && o->data) bytes[o->iface] += o->size;
+			if (o->iface == ITexture && o->ref > 0 && texShapes.size() < 4096)
+			{
+				char k[48];
+				snprintf(k, sizeof k, "%ux%u/%u/%x", o->w, o->h, o->levels, o->fmt);
+				texShapes[k]++;
+			}
+		}
+	}
+	r += " | alive:";
+	for (int i = 0; i < INumIfaces; i++)
+		if (cnt[i]) { char c[80]; snprintf(c, sizeof c, " %s %u (%u released) %llu MiB", nm[i], cnt[i], rel[i], (unsigned long long)(bytes[i] >> 20)); r += c; }
+	std::vector<std::pair<uint32_t, std::string>> top;
+	for (auto& kv : texShapes) top.push_back({kv.second, kv.first});
+	std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	r += " | most common held textures:";
+	for (size_t i = 0; i < top.size() && i < 8; i++) { char c[80]; snprintf(c, sizeof c, " %s x%u", top[i].second.c_str(), top[i].first); r += c; }
 	return r;
 }
 Obj* newObj(Iface i)

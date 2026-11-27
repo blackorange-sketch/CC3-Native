@@ -82,6 +82,37 @@ std::string heapCensusLine()
 namespace { void (*reclaimHook)() = nullptr; thread_local bool inReclaim = false; }
 void setHeapReclaim(void (*fn)()) { reclaimHook = fn; }
 
+// The arena is used up: a free block of a larger class, split when the rest is worth keeping. Freed blocks only go
+// back to their own size class, so a long battle (textures of every size made and released) ended with hundreds of
+// MiB free but in the wrong classes ("guest heap exhausted" with 437 MiB free-listed).
+static bool hasLarger(uint32_t cls)
+{
+	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end(); ++it) if (!it->second.empty()) return true;
+	return false;
+}
+static bool takeLarger(uint32_t& cls, uint32_t& block)
+{
+	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end(); ++it)
+	{
+		if (it->second.empty()) continue;
+		uint32_t c = it->first;
+		block = it->second.back();
+		it->second.pop_back();
+		freeBytes -= c;
+		if (c >= cls + 16 + 64)
+		{
+			uint32_t rest = c - cls - 16, rb = block + 16 + cls;   // the remainder: its own header + payload
+			freeBySize[rest].push_back(rb);
+			freeBytes += rest;
+		}
+		else cls = c;
+		static int nl = 0;
+		if (nl++ < 5) log("guest heap: arena full - %u-byte request served from a free %u-byte block", cls, c);
+		return true;
+	}
+	return false;
+}
+
 uint32_t gmalloc(uint32_t size, uint32_t align)
 {
 	std::unique_lock<std::mutex> l(mu);
@@ -89,7 +120,7 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	if (align > 16) cls = classOf(cls + align);
 	lastReq = size;
 	// about to run out: let the owner of released data (D3D textures the game let go of) free it, then retry
-	if (reclaimHook && !inReclaim && freeBySize[cls].empty() && ((bump + 31) & ~15u) + cls > HeapEnd)
+	if (reclaimHook && !inReclaim && freeBySize[cls].empty() && ((bump + 31) & ~15u) + cls > HeapEnd && !hasLarger(cls))
 	{
 		l.unlock();
 		inReclaim = true;
@@ -100,6 +131,7 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	auto& fl = freeBySize[cls];
 	uint32_t block;
 	if (!fl.empty()) { block = fl.back(); fl.pop_back(); freeBytes -= cls; }
+	else if (((bump + 15) & ~15u) + 16 + (uint64_t)cls > HeapEnd && takeLarger(cls, block)) {}
 	else
 	{
 		block = (bump + 15) & ~15u;
