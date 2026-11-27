@@ -34,7 +34,7 @@
 #include "gfx.h"
 #include "glrec.h"
 #include "gputime.h"
-namespace rt { uint64_t limiterCpuUs(); }
+namespace rt { uint64_t limiterCpuUs(); extern std::mutex gGammaMu; extern uint16_t gGamma[768]; extern std::atomic<uint32_t> gGammaVer; }
 namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
 using namespace rt;
@@ -1259,7 +1259,7 @@ const char* kBlurFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nu
 	"void main(){ vec2 q = m.xy + uv * m.zw; vec2 d = 1.0 / vec2(textureSize(t, 5)); vec3 c = vec3(0.0);\n"
 	"for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) c += textureLod(t, q + vec2(float(x), float(y)) * d, 5.0).rgb;\n"
 	"o = vec4(c * (0.55 / 9.0), a); }\n";
-const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
+const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nuniform sampler2D g;\nuniform float useG;\nout vec4 o;\nvoid main(){ vec3 c = texture(t, uv).rgb; if (useG > 0.5) { vec3 k = c * (255.0 / 256.0) + 0.5 / 256.0; c = vec3(texture(g, vec2(k.r, 0.5)).r, texture(g, vec2(k.g, 0.5)).g, texture(g, vec2(k.b, 0.5)).b); } o = vec4(c, 1.0); }\n";
 // on-screen buttons: a translucent rectangle (r = x0, y0, x1, y1 in clip space)
 const char* kRectVs = "#version 300 es\nuniform vec4 r;\nvoid main(){ vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)); gl_Position = vec4(mix(r.x, r.z, p.x), mix(r.y, r.w, p.y), 0.0, 1.0); }\n";
 const char* kRectFs = "#version 300 es\nprecision mediump float;\nuniform vec4 c;\nout vec4 o;\nvoid main(){ o = c; }\n";
@@ -2965,6 +2965,50 @@ static void presentImpl()
 	glBindTexture(GL_TEXTURE_2D, gBackTex);
 	static GLint blitLoc = glGetUniformLocation(gBlitProg, "t");   // once: a query waits for the render thread
 	glUniform1i(blitLoc, 0);
+	{
+		// the game's gamma ramp (SetDeviceGammaRamp), as a 256x1 lookup on unit 1; /sdcard/cc3_nogamma turns it off
+		static GLint gLoc = glGetUniformLocation(gBlitProg, "g"), useLoc = glGetUniformLocation(gBlitProg, "useG");
+		static GLuint gTex = 0; static uint32_t ver = 0; static bool use = false;
+		static const bool off = access("/sdcard/cc3_nogamma", F_OK) == 0;
+		uint32_t v = rt::gGammaVer.load();
+		if (!off && v != ver)
+		{
+			ver = v;
+			uint8_t px[256 * 4];
+			bool ident = true;
+			{
+				std::lock_guard<std::mutex> l(rt::gGammaMu);
+				for (int i = 0; i < 256; i++)
+					for (int c = 0; c < 3; c++)
+					{
+						int val = rt::gGamma[c * 256 + i] >> 8;
+						px[i * 4 + c] = (uint8_t)val;
+						if (abs(val - i) > 1) ident = false;
+					}
+			}
+			for (int i = 0; i < 256; i++) px[i * 4 + 3] = 255;
+			if (!gTex) glGenTextures(1, &gTex);
+			glActiveTexture(GL_TEXTURE1);
+			glBindSampler(1, 0);
+			glBindTexture(GL_TEXTURE_2D, gTex);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			glActiveTexture(GL_TEXTURE0);
+			gTexBindDirty = true;
+			use = !ident;
+			log("gamma ramp: %s", use ? "applied to the picture" : "identity (nothing to do)");
+		}
+		if (use)
+		{
+			glActiveTexture(GL_TEXTURE1); glBindSampler(1, 0); glBindTexture(GL_TEXTURE_2D, gTex); glActiveTexture(GL_TEXTURE0);
+			gTexBindDirty = true;
+		}
+		glUniform1i(gLoc, 1);
+		glUniform1f(useLoc, use ? 1.f : 0.f);
+	}
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	{
 		// Menus are Flash movies laid out for 16:9: on a wider picture the parts parked off the stage (the sliding

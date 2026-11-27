@@ -593,7 +593,26 @@ IMP_ID(GDI, "SetBkMode", SetBkMode, 8)
 	int p = d->second.bkMode; d->second.bkMode = (int)ARG(1); SET((uint32_t)p);
 }
 IMP_ID(GDI, "SetMapMode", SetMapMode, 8) { SET(1); }
-IMP_ID(GDI, "SetDeviceGammaRamp", SetDeviceGammaRamp, 8) { SET(1); }
+// The game's brightness/gamma setting arrives as a display gamma ramp (3 x 256 WORDs). It is kept and applied
+// when the picture is shown (d3d9_gl present); a PC's driver applies it to the whole screen.
+namespace rt { std::mutex gGammaMu; uint16_t gGamma[768]; std::atomic<uint32_t> gGammaVer{0}; }
+IMP_ID(GDI, "SetDeviceGammaRamp", SetDeviceGammaRamp, 8)
+{
+	if (!ARG(1)) { SET(0); return; }
+	uint16_t r[768];
+	memcpy(r, guest::host(ARG(1)), sizeof r);
+	bool changed;
+	{
+		std::lock_guard<std::mutex> l(rt::gGammaMu);
+		changed = memcmp(r, rt::gGamma, sizeof r) != 0 || rt::gGammaVer.load() == 0;
+		if (changed) { memcpy(rt::gGamma, r, sizeof r); rt::gGammaVer++; }
+	}
+	static int nl = 0;
+	if (changed && nl++ < 8)
+		log("gamma ramp: R %u %u %u %u %u  G %u %u %u %u %u  B %u %u %u %u %u (of 65535, at 0/64/128/192/255)",
+			r[0], r[64], r[128], r[192], r[255], r[256], r[320], r[384], r[448], r[511], r[512], r[576], r[640], r[704], r[767]);
+	SET(1);
+}
 // (dst, x, y, w, h, src, sx, sy, rop): SRCCOPY between two DCs' bitmaps
 IMP_ID(GDI, "BitBlt", BitBlt, 36)
 {
