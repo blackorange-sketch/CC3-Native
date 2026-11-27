@@ -681,7 +681,43 @@ H("ID3DXEffect::SetMatrixTransposePointerArray") { setMatrices(c, o, true, true,
 H("ID3DXEffect::SetTexture")
 {
 	PRef r = refOfSet(o, ARG(1));
-	if (r.valid()) { holdRef(r.p->texObj ? objectAt(r.p->texObj) : nullptr, ARG(2) ? objectAt(ARG(2)) : nullptr); r.p->texObj = ARG(2); }
+	uint32_t texArg = ARG(2);
+	{
+		// A/B: /sdcard/cc3_whitetex lists parameter names (one per line, part of the name is enough, e.g. Cloud,
+		// Shroud, Macro); textures set to matching parameters are replaced by plain white
+		static std::vector<std::string> names = [] {
+			std::vector<std::string> v;
+			if (FILE* f = fopen("/sdcard/cc3_whitetex", "r"))
+			{
+				char ln[128];
+				while (fgets(ln, sizeof ln, f)) { std::string t(ln); while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back(); if (!t.empty()) v.push_back(t); }
+				fclose(f);
+			}
+			std::string all; for (auto& n : v) all += " " + n;
+			if (!v.empty()) log("fx: textures replaced by white for parameters matching:%s", all.c_str());
+			return v;
+		}();
+		static uint32_t white = 0;
+		if (!names.empty() && r.valid() && texArg)
+			for (auto& n : names)
+				if (r.p->name.find(n) != std::string::npos)
+				{
+					if (!white)
+					{
+						Obj* t = newObj(ITexture);
+						t->w = t->h = 4; t->levels = 1; t->fmt = 21; t->pool = 1;
+						allocLevels(t, 1);
+						memset(guest::host(t->data), 0xff, t->size);
+						t->ref = 1 << 20;
+						white = t->addr;
+					}
+					static int nw = 0;
+					if (nw++ < 10) log("fx: '%s' -> white", r.p->name.c_str());
+					texArg = white;
+					break;
+				}
+	}
+	if (r.valid()) { holdRef(r.p->texObj ? objectAt(r.p->texObj) : nullptr, texArg ? objectAt(texArg) : nullptr); r.p->texObj = texArg; }
 	{
 		static int nl = 0;
 		if (nl++ < 40) log("fx: SetTexture handle %x valid %d name '%s' tex %x", ARG(1), (int)r.valid(), r.valid() ? r.p->name.c_str() : "", ARG(2));
