@@ -1075,7 +1075,21 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		}
 		GLuint name = 0;
 		bool noFilter = false;
-		if (t && target == GL_TEXTURE_CUBE_MAP && texOwner(t)->iface == ITexture) name = cubeFrom2D(texOwner(t));
+		static const bool noShadowTest = access("/sdcard/cc3_noshadowtest", F_OK) == 0;
+		if (noShadowTest && t && target == GL_TEXTURE_2D && texOwner(t)->fmt == 114 && texOwner(t)->rtTex && texOwner(t)->w == 1024)
+		{
+			// A/B: the shadow map replaced by a 1x1 texture holding 1.0 (the far plane) - nothing is in shadow
+			static GLuint white = 0;
+			if (!white)
+			{
+				glGenTextures(1, &white); glBindTexture(GL_TEXTURE_2D, white); gTexBindDirty = true;
+				uint8_t px[4] = {255, 255, 255, 255};
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+				log("shadows: test off (cc3_noshadowtest)");
+			}
+			name = white;
+		}
+		else if (t && target == GL_TEXTURE_CUBE_MAP && texOwner(t)->iface == ITexture) name = cubeFrom2D(texOwner(t));
 		else if (t && targetOf(texOwner(t)) == target)
 		{
 			name = ensureTexture(t);
@@ -1414,6 +1428,16 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if ((flags & 2) && hasDepth) { glDepthMask(GL_TRUE); glClearDepthf(z); m |= GL_DEPTH_BUFFER_BIT; }
 	if ((flags & 4) && hasDepth) { glStencilMask(0xff); glClearStencil((GLint)stencil); m |= GL_STENCIL_BUFFER_BIT; }
 	if (traceFrame()) log("TR clear rt %s flags %x color %08x z %g rects %u", objTag(dev.rt0).c_str(), flags, color, (double)z, count);
+	{
+		static const bool pd = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static int n = 0;
+		if (pd && !isBack(dev.rt0) && tw == 1024 && th == 1024 && n < 4)
+		{
+			n++;
+			uint32_t dw = 0, dh = 0; if (dev.ds) { dw = dev.ds->w; dh = dev.ds->h; }
+			log("SH clear map rt %s flags %x color %08x z %g rects %u | depth surface %s %ux%u", objTag(dev.rt0).c_str(), flags, color, (double)z, count, dev.ds ? objTag(dev.ds).c_str() : "none", dw, dh);
+		}
+	}
 	if (!m) return;
 	if (firstUse && !(count && rects) && (m & GL_DEPTH_BUFFER_BIT) && (m & GL_STENCIL_BUFFER_BIT)) gBackClearedFirst = true;
 	if (count && rects)
@@ -2310,7 +2334,8 @@ static void drawImpl(const DrawCall& dc)
 					}
 					log("SH   %s%s", st2 == 0 ? "VS" : "PS", vv.c_str());
 				}
-				if (nSrc++ < 4)
+				static int nSrcUse = 0;
+				if (intoMap ? nSrc++ < 1 : nSrcUse++ < 3)
 				{
 					log("SH VS source:\n%s", shdr::compose(vs->info).c_str());
 					log("SH PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
