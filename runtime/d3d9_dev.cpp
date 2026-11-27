@@ -219,7 +219,8 @@ H("IDirect3DDevice9::Present")
 H("IDirect3DSwapChain9::Present") { glr::present(); SET(0); } END;
 
 // ---- drawing
-Obj* texOwner(Obj* o);
+namespace glr { Obj* texOwner(Obj* o); }
+using glr::texOwner;
 static std::atomic<uint32_t> drawCount{0};
 static void doDraw(const DrawCall& dc)
 {
