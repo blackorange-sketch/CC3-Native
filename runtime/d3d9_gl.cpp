@@ -2964,7 +2964,7 @@ static void reapReleased(uint32_t frame)
 	if (frame - lastLog >= 3600)
 	{
 		lastLog = frame;
-		log("mem: guest heap %llu MiB live; reclaimed %llu d3d objects, %llu MiB so far", (unsigned long long)(rt::heapLiveBytes() >> 20), (unsigned long long)freedObjs, (unsigned long long)(freedBytes >> 20));
+		log("mem: guest heap %llu MiB live; reclaimed %llu d3d objects, %llu MiB so far; made: %s", (unsigned long long)(rt::heapLiveBytes() >> 20), (unsigned long long)freedObjs, (unsigned long long)(freedBytes >> 20), objStats().c_str());
 		log("mem: growth by allocation site (game return<caller: +since last (live), sampled 1/16; 00000000 = runtime):%s", rt::heapCensusLine().c_str());
 	}
 }
