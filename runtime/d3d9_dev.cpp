@@ -219,6 +219,7 @@ H("IDirect3DDevice9::Present")
 H("IDirect3DSwapChain9::Present") { glr::present(); SET(0); } END;
 
 // ---- drawing
+Obj* texOwner(Obj* o);
 static std::atomic<uint32_t> drawCount{0};
 static void doDraw(const DrawCall& dc)
 {
@@ -234,6 +235,24 @@ static void doDraw(const DrawCall& dc)
 			for (uint32_t i = 0; i < std::min<uint32_t>(st.stride / 4 * 3, 24); i++) { char b[24]; snprintf(b, sizeof b, " %g", (double)f[i]); vals += b; }
 		}
 		log("d3d9: late draw #%u prim %u cnt %u stride %u vb %p vals:%s | rt %p tex0 %p tex1 %p", n, dc.prim, dc.primCount, st.stride, (void*)st.vb, vals.c_str(), (void*)dev.rt0, (void*)dev.tex[0], (void*)dev.tex[1]);
+	}
+	{
+		// cc3_postdiag: the colour lookup table bound to the lookup-table effect, saved whole to /sdcard/cc3_lut.bin
+		// (each time it changes, up to 4 times) with its sampler states
+		static const bool diag = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static uint32_t lastVer = ~0u, lastAddr = 0; static int saved = 0;
+		if (diag && gFxDiagHash == 0x59462bf1 && saved < 4)
+			for (int i = 0; i < 8; i++)
+				if (Obj* t = dev.tex[i])
+				{
+					Obj* ow = texOwner(t);
+					if (ow->iface != IVolume || !ow->data || (ow->ver == lastVer && ow->addr == lastAddr)) continue;
+					lastVer = ow->ver; lastAddr = ow->addr; saved++;
+					char path[64]; snprintf(path, sizeof path, "/sdcard/cc3_lut%d.bin", saved);
+					if (FILE* f = fopen(path, "wb")) { fwrite(guest::host(ow->data), 1, ow->size, f); fclose(f); }
+					log("lut: saved %s - volume %08x %ux%ux%u fmt %u levels %u size %u ver %u | sampler %d addr %u/%u/%u filt mag %u min %u mip %u srgb %u | BlendFactor %g",
+						path, ow->addr, ow->w, ow->h, ow->d, ow->fmt, ow->levels, ow->size, ow->ver, i, dev.samp[i][1], dev.samp[i][2], dev.samp[i][3], dev.samp[i][5], dev.samp[i][6], dev.samp[i][7], dev.samp[i][11], (double)dev.psF[0]);
+				}
 	}
 	{
 		// A/B switches for comparing the picture: leave out a post effect's draws
