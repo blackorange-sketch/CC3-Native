@@ -2273,6 +2273,52 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	{
+		// cc3_postdiag: shadows - the first draws into the 1024x1024 R32F shadow map, and the first terrain/object
+		// draws that sample it: states, textures, named constants and the translated shaders
+		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static int nMap = 0, nUse = 0, nSrc = 0;
+		static uint32_t lastH = 0;
+		if (on && gFrameNo >= 1800)
+		{
+			uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+			bool intoMap = !isBack(dev.rt0) && rw == 1024 && rh == 1024;
+			bool usesMap = false;
+			for (int i = 0; i < 8; i++) if (Obj* t = dev.tex[i]) { Obj* ow = texOwner(t); if (ow->fmt == 114 && ow->w == 1024 && ow->rtTex) usesMap = true; }
+			bool want = (intoMap && nMap < 4) || (usesMap && isBack(dev.rt0) && (nUse < 3 || (gFxDiagHash != lastH && nUse < 10)));
+			if (want)
+			{
+				if (intoMap) nMap++; else { nUse++; lastH = gFxDiagHash; }
+				log("SH %s fx %08x tech %u pass %u prim %u cnt %u | z %u zw %u zfunc %u blend %u cull %u cw %x colorwrite %x | rt %s %ux%u vp %u,%u,%u,%u depth %g-%g",
+					intoMap ? "into-map" : "uses-map", gFxDiagHash, gFxDiagTech, gFxDiagPass, dc.prim, dc.primCount, dev.rs[7], dev.rs[14], dev.rs[23], dev.rs[27], dev.rs[22], dev.rs[168], dev.rs[168],
+					isBack(dev.rt0) ? "back" : objTag(dev.rt0).c_str(), rw, rh, dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], (double)dev.vpZ[0], (double)dev.vpZ[1]);
+				std::string tx;
+				for (int i = 0; i < 8; i++)
+					if (Obj* t = dev.tex[i]) { char b2[120]; snprintf(b2, sizeof b2, " t%d=%ux%u/f%u%s[addr %u/%u filt %u/%u/%u]", i, t->w, t->h, t->fmt, t->rtTex ? "/RT" : "", dev.samp[i][1], dev.samp[i][2], dev.samp[i][5], dev.samp[i][6], dev.samp[i][7]); tx += b2; }
+				log("SH   tex:%s", tx.c_str());
+				for (int st2 = 0; st2 < 2; st2++)
+				{
+					auto& ct = st2 == 0 ? vs->info.ctab : ps->info.ctab;
+					const float* base = st2 == 0 ? dev.vsF : dev.psF;
+					uint32_t maxReg = st2 == 0 ? 256 : 224;
+					std::string vv;
+					for (auto& cc : ct)
+					{
+						if (cc.regSet != 2 || cc.regIndex >= maxReg) continue;
+						char nb[64]; snprintf(nb, sizeof nb, " %s(c%u):", cc.name.c_str(), cc.regIndex); vv += nb;
+						for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 5) && cc.regIndex + r < maxReg; r++)
+							{ char b5[96]; const float* f = base + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, "[%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+					}
+					log("SH   %s%s", st2 == 0 ? "VS" : "PS", vv.c_str());
+				}
+				if (nSrc++ < 4)
+				{
+					log("SH VS source:\n%s", shdr::compose(vs->info).c_str());
+					log("SH PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
+				}
+			}
+		}
+	}
+	{
 		// cc3_postdiag: per frame, the light colour (c182.x) and fog colour (c197.x) of every tree draw, for 12 frames -
 		// do the same trees switch between two lightings from frame to frame (flicker)?
 		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
