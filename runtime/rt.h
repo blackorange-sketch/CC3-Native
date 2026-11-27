@@ -72,6 +72,7 @@ void gfree(uint32_t p);
 uint32_t grealloc(uint32_t p, uint32_t size);
 uint32_t gsize(uint32_t p);
 uint32_t vmAlloc(uint32_t size);
+bool heapReadable(uint32_t addr, uint32_t size);   // [addr, addr+size) lies in committed heap memory (any thread)
 bool vmRelease(uint32_t addr);
 // compiled effects collected from the .big files, written once to /sdcard/cc3_shaders.zip (offline effect audit)
 bool fxExportWanted();

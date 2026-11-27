@@ -1,3 +1,4 @@
+#include <atomic>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -22,6 +23,7 @@ void watchLog(const char* what, uint32_t p, uint32_t sz)
 constexpr uint32_t Magic = 0xa110ca7e;
 std::mutex mu;
 uint32_t bump = HeapBase, committedTo = HeapBase, lastReq = 0;
+std::atomic<uint32_t> top1{HeapBase};   // committed end of the arena, for heapReadable (any thread)
 uint64_t liveBytes = 0, freeBytes = 0;
 std::map<uint32_t, std::vector<uint32_t>> freeBySize;   // class size -> payload addresses
 
@@ -44,10 +46,12 @@ void commitTo(uint32_t end)
 	if (newEnd > HeapEnd) fatal("guest heap exhausted (request %u bytes, live %llu MiB, free-listed %llu MiB)", lastReq, (unsigned long long)(liveBytes >> 20), (unsigned long long)(freeBytes >> 20));
 	if (!guest::commit(committedTo, newEnd - committedTo)) fatal("cannot commit guest heap");
 	committedTo = newEnd;
+	top1.store(newEnd, std::memory_order_release);
 }
 }
 
 void heapInit() {}
+bool heapReadable(uint32_t addr, uint32_t size) { return addr >= HeapBase && (uint64_t)addr + size <= top1.load(std::memory_order_acquire); }
 uint64_t heapLiveBytes() { std::lock_guard<std::mutex> l(mu); return liveBytes; }
 
 // heap census (leak hunt): 1 in 16 blocks remember who allocated them (the game's return address and its caller,
