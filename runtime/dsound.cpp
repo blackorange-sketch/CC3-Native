@@ -150,6 +150,7 @@ Obj* make(Kind k)
 {
 	auto* o = new Obj;
 	o->kind = k;
+	gAllocSite = 0xd5000003;
 	o->addr = gmalloc(8);
 	guest::store<uint32_t>(o->addr, vtableFor(k));
 	std::lock_guard<std::mutex> l(mu);
@@ -218,6 +219,7 @@ void dispatch(CPU* c)
 			if (!b->primary)
 			{
 				if (!b->size || b->size > (64u << 20)) { SET(DSERR_INVALIDPARAM); return; }
+				gAllocSite = 0xd5000001;   // heap census: sound buffer
 				b->data = gmalloc(b->size);
 				memset(guest::host(b->data), b->bits == 8 ? 0x80 : 0, b->size);
 			}
@@ -234,7 +236,7 @@ void dispatch(CPU* c)
 			if (!s || !ARG(2)) { SET(DSERR_INVALIDPARAM); return; }
 			Obj* b = make(KBuffer);
 			b->flags = s->flags; b->size = s->size; b->primary = s->primary; memcpy(b->fmt, s->fmt, 18); b->channels = s->channels; b->bits = s->bits; b->rate = s->rate;
-			if (s->data) { b->data = gmalloc(b->size); memcpy(guest::host(b->data), guest::host(s->data), b->size); }
+			if (s->data) { gAllocSite = 0xd5000002; b->data = gmalloc(b->size); memcpy(guest::host(b->data), guest::host(s->data), b->size); }
 			guest::store<uint32_t>(ARG(2), b->addr);
 			SET(DS_OK);
 			return;

@@ -273,6 +273,7 @@ Obj* newObj(Iface i)
 	o->iface = i;
 	// block: vtable, refcount, iface, table index, then the host Obj* and a check word (addr ^ kObjMagic), so
 	// objectAt resolves a guest pointer with two loads from the block itself instead of a table walk
+	rt::gAllocSite = 0xd3d00001;   // heap census: D3D object block
 	o->addr = gmalloc(32);
 	guest::store<uint64_t>(o->addr + 16, (uint64_t)(uintptr_t)o);
 	guest::store<uint32_t>(o->addr + 24, o->addr ^ kObjMagic);
@@ -323,6 +324,7 @@ void allocLevels(Obj* o, uint32_t faces)
 			total += levelBytes(o->fmt, std::max(1u, o->w >> l), std::max(1u, o->h >> l)) * std::max(1u, o->d >> l);
 		}
 	o->size = total;
+	rt::gAllocSite = 0xd3d00002;   // texture data
 	o->data = gmalloc(total ? total : 16);
 	memset(guest::host(o->data), 0, total);
 }
@@ -335,6 +337,7 @@ Obj* makeSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t usage, uint32_t 
 	s->w = w; s->h = h; s->fmt = fmt; s->usage = usage; s->pool = pool; s->levels = 1;
 	s->pitch = levelPitch(fmt, w);
 	s->size = levelBytes(fmt, w, h);
+	rt::gAllocSite = 0xd3d00003;   // surface data
 	s->data = gmalloc(s->size ? s->size : 16);
 	memset(guest::host(s->data), 0, s->size);
 	return s;
@@ -384,6 +387,7 @@ static void fillDesc(uint32_t pDesc, Obj* s)   // D3DSURFACE_DESC
 static void reviveStorage(Obj* o)
 {
 	if (o->data || !o->size || !o->ownsData) return;
+	rt::gAllocSite = 0xd3d00004;
 	o->data = gmalloc(o->size);
 	memset(guest::host(o->data), 0, o->size);
 	o->ver++;
@@ -558,6 +562,7 @@ H("IDirect3DDevice9::CreateVertexBuffer")
 {
 	Obj* b = newObj(IVB);
 	b->size = ARG(1); b->usage = ARG(2); b->fvf = ARG(3); b->pool = ARG(4);
+	rt::gAllocSite = 0xd3d00005;   // vertex/index buffer data
 	b->data = gmalloc(b->size ? b->size : 16);
 	memset(guest::host(b->data), 0, b->size);
 	writeOut(ARG(5), b);
@@ -567,6 +572,7 @@ H("IDirect3DDevice9::CreateIndexBuffer")
 {
 	Obj* b = newObj(IIB);
 	b->size = ARG(1); b->usage = ARG(2); b->fmt = ARG(3); b->pool = ARG(4);
+	rt::gAllocSite = 0xd3d00006;   // index buffer data
 	b->data = gmalloc(b->size ? b->size : 16);
 	memset(guest::host(b->data), 0, b->size);
 	writeOut(ARG(5), b);

@@ -87,14 +87,18 @@ void setHeapReclaim(void (*fn)()) { reclaimHook = fn; }
 // MiB free but in the wrong classes ("guest heap exhausted" with 437 MiB free-listed).
 static bool hasLarger(uint32_t cls)
 {
-	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end(); ++it) if (!it->second.empty()) return true;
+	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end();)
+	{
+		if (!it->second.empty()) return true;
+		it = freeBySize.erase(it);   // keep the walk short: empty classes go
+	}
 	return false;
 }
 static bool takeLarger(uint32_t& cls, uint32_t& block)
 {
-	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end(); ++it)
+	for (auto it = freeBySize.lower_bound(cls); it != freeBySize.end();)
 	{
-		if (it->second.empty()) continue;
+		if (it->second.empty()) { it = freeBySize.erase(it); continue; }
 		uint32_t c = it->first;
 		block = it->second.back();
 		it->second.pop_back();

@@ -90,7 +90,7 @@ static inline uint64_t allocSite(CPU* c)
 }
 IMP_C(DLL, malloc) { gAllocSite = allocSite(c); SET(gmalloc(ARG(0))); }
 IMP_C(DLL, calloc) { uint32_t n = ARG(0) * ARG(1); gAllocSite = allocSite(c); uint32_t p = gmalloc(n); memset(guest::host(p), 0, n); SET(p); }
-IMP_C(DLL, realloc) { SET(grealloc(ARG(0), ARG(1))); }
+IMP_C(DLL, realloc) { gAllocSite = allocSite(c) | 0x8000000000000000ull; SET(grealloc(ARG(0), ARG(1))); }   // top bit: realloc
 IMP_C(DLL, free) { gfree(ARG(0)); }
 IMP_C(DLL, _aligned_malloc) { gAllocSite = allocSite(c); SET(gmalloc(ARG(0), ARG(1))); }
 IMP_C(DLL, _aligned_free) { gfree(ARG(0)); }

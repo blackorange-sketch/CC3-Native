@@ -536,6 +536,7 @@ IMP_ID(GDI, "CreateDIBSection", CreateDIBSection, 24)
 	uint32_t bpp = guest::load<uint16_t>(bmi + 14);
 	uint32_t stride = ((uint32_t)std::abs(w) * std::max(1u, bpp) + 31) / 32 * 4;
 	uint32_t size = stride * (uint32_t)std::abs(h);
+	gAllocSite = 0x9d100001;   // heap census: DIB section
 	uint32_t bits = size ? gmalloc(size) : 0;
 	if (bits) memset(guest::host(bits), 0, size);
 	if (ARG(3)) guest::store<uint32_t>(ARG(3), bits);
