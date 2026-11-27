@@ -1,3 +1,4 @@
+#include <unistd.h>
 // Direct3D 9 device: state tracking and draw calls. Drawing itself is done by the GL renderer (d3d9_gl.cpp).
 #include <atomic>
 #include <chrono>
@@ -233,6 +234,14 @@ static void doDraw(const DrawCall& dc)
 			for (uint32_t i = 0; i < std::min<uint32_t>(st.stride / 4 * 3, 24); i++) { char b[24]; snprintf(b, sizeof b, " %g", (double)f[i]); vals += b; }
 		}
 		log("d3d9: late draw #%u prim %u cnt %u stride %u vb %p vals:%s | rt %p tex0 %p tex1 %p", n, dc.prim, dc.primCount, st.stride, (void*)st.vb, vals.c_str(), (void*)dev.rt0, (void*)dev.tex[0], (void*)dev.tex[1]);
+	}
+	{
+		// A/B switches for comparing the picture: leave out a post effect's draws
+		static const bool noBloom = access("/sdcard/cc3_nobloom", F_OK) == 0, noLut = access("/sdcard/cc3_nolut", F_OK) == 0,
+			noDist = access("/sdcard/cc3_nodistort", F_OK) == 0;
+		static bool said = false;
+		if (!said) { said = true; if (noBloom || noLut || noDist) log("post effects left out:%s%s%s", noBloom ? " bloom" : "", noLut ? " lookup-table" : "", noDist ? " distortion" : ""); }
+		if ((noBloom && gFxDiagHash == 0x4513f1cd) || (noLut && gFxDiagHash == 0x59462bf1) || (noDist && gFxDiagHash == 0x9d52aa40)) return;
 	}
 	glr::draw(dc);
 }

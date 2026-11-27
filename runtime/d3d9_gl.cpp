@@ -2214,6 +2214,22 @@ static void drawImpl(const DrawCall& dc)
 					tx += b2;
 				}
 			log("PD   tex:%s", tx.c_str());
+			for (int i = 0; i < 8; i++)
+				if (Obj* t = dev.tex[i])
+				{
+					Obj* ow = texOwner(t);
+					if (ow->iface != IVolume || !ow->data || ow->levelOff.empty() || (ow->fmt != 21 && ow->fmt != 22)) continue;
+					const uint8_t* b = (const uint8_t*)guest::host(ow->data + ow->levelOff[0]);
+					std::string o;
+					uint32_t W = ow->w, H = ow->h, D = ow->d;
+					const uint32_t pts[][3] = {{0, 0, 0}, {W - 1, 0, 0}, {0, H - 1, 0}, {0, 0, D - 1}, {W / 2, H / 2, D / 2}, {W - 1, H - 1, D - 1}, {W / 4, H / 4, D / 4}};
+					for (auto& q : pts)
+					{
+						const uint8_t* px = b + ((size_t)q[2] * H * W + (size_t)q[1] * W + q[0]) * 4;
+						char b2[64]; snprintf(b2, sizeof b2, " (%u,%u,%u)=B%u G%u R%u A%u", q[0], q[1], q[2], px[0], px[1], px[2], px[3]); o += b2;
+					}
+					log("PD   volume t%d %ux%ux%u fmt %u levels %u ver %u:%s", i, W, H, D, ow->fmt, ow->levels, ow->ver, o.c_str());
+				}
 			const uint8_t* vb = nullptr; uint32_t stride = 0; uint64_t vbSize = 0;
 			if (dc.upVerts) { vb = (const uint8_t*)dc.upVerts; stride = dc.upStride; vbSize = ~0ull; }
 			else if (dev.streams[0].vb && dev.streams[0].vb->data) { vb = (const uint8_t*)guest::host(dev.streams[0].vb->data) + dev.streams[0].offset; stride = dev.streams[0].stride; vbSize = dev.streams[0].vb->size - dev.streams[0].offset; }

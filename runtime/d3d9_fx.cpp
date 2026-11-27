@@ -1160,7 +1160,7 @@ H("ID3DXEffect::BeginPass")
 } END;
 H("ID3DXEffect::CommitChanges") { noteFxUse(F(o)); fxApplyPass(o); SET(0); } END;
 H("ID3DXEffect::EndPass") { SET(0); } END;
-H("ID3DXEffect::End") { gPass.active = false; SET(0); } END;
+H("ID3DXEffect::End") { gPass.active = false; gFxDiagHash = 0; SET(0); } END;
 H("ID3DXEffect::OnLostDevice") { SET(0); } END;
 H("ID3DXEffect::OnResetDevice") { SET(0); } END;
 H("ID3DXEffect::GetDesc")
