@@ -121,10 +121,20 @@ void renderLoop()
 		// poll very briefly before sleeping (catches chunks published back to back). It used to poll for 1 ms, which
 		// kept a core busy all the time: noticeably more heat and battery drain for a few % of the game thread.
 		{
-			uint64_t t0 = nowUs();
+			// the time is read from the CPU's virtual counter (a register read): clock_gettime here was 25-30% of the
+			// render thread's samples
+			uint64_t f, t0;
+			__asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(f));
+			__asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(t0));
+			const uint64_t lim = f / 20000;   // 50 us
 			for (int i = 0; nSubmitted.load(std::memory_order_acquire) == executedSeen; i++)
 			{
-				if ((i & 63) == 63 && nowUs() - t0 > 50) break;
+				if ((i & 63) == 63)
+				{
+					uint64_t t;
+					__asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(t));
+					if (t - t0 > lim) break;
+				}
 				__asm__ __volatile__("yield");
 			}
 		}
