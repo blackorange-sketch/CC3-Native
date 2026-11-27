@@ -303,7 +303,7 @@ inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, Pre
 		for (uint32_t k = 0; k < nin; k++) operand(at[k], ai[k]);
 		uint32_t ot, oi;
 		operand(ot, oi);
-		uint32_t opc = (tok >> 20) & 0x7ff, comps = tok & 0xffff;
+		uint32_t opc = (tok >> 20) & 0xfff, comps = tok & 0xffff;   // 12 bits: the scalar-first forms are 0xa0x
 		bool scalar = (tok & 0x10000) != 0;
 		// 0xa0x: the two-operand ops (min .. div) with a scalar first operand (as D3DX writes them for "s * v")
 		if (opc >= 0xa00 && opc <= 0xa08) { opc -= 0x800; scalar = true; }
