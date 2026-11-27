@@ -1,3 +1,4 @@
+#include <dlfcn.h>
 #include <atomic>
 #include <vector>
 #include <string>
@@ -69,10 +70,24 @@ std::string heapCensusLine()
 	for (auto& kv : siteLive) grow.push_back({kv.second - siteLast[kv.first], kv.first});
 	std::sort(grow.begin(), grow.end(), [](auto& a, auto& b) { return a.first > b.first; });
 	std::string o;
-	char b[96];
+	char b[160];
 	for (size_t i = 0; i < grow.size() && i < 10; i++)
 	{
 		uint64_t s = grow[i].second;
+		if (s >> 62 == 1)
+		{
+			uintptr_t pc = (uintptr_t)(s & ((1ull << 62) - 1));
+			Dl_info di{};
+			std::string nm = "?";
+			if (dladdr((void*)pc, &di))
+			{
+				if (di.dli_sname) { nm = di.dli_sname; if (nm.size() > 48) nm.resize(48); }
+				char off[32]; snprintf(off, sizeof off, "+%zx", (size_t)(pc - (uintptr_t)(di.dli_saddr ? di.dli_saddr : di.dli_fbase))); nm += off;
+			}
+			snprintf(b, sizeof b, " [%s]:%+lldK(%lldK)", nm.c_str(), (long long)(grow[i].first * 16 / 1024), (long long)(siteLive[s] * 16 / 1024));
+			o += b;
+			continue;
+		}
 		snprintf(b, sizeof b, " %08x<%08x:%+lldK(%lldK)", (uint32_t)s, (uint32_t)(s >> 32), (long long)(grow[i].first * 16 / 1024), (long long)(siteLive[s] * 16 / 1024));
 		o += b;
 	}
@@ -153,6 +168,8 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	{
 		uint64_t site = gAllocSite;
 		gAllocSite = 0;
+		// untagged: the runtime function that asked (host return address, marked with bit 62; named in the report)
+		if (!site) site = (uint64_t)(uintptr_t)__builtin_return_address(0) | (1ull << 62);
 		if (((payload >> 4) & 15) == 0) { census[payload] = {site, cls}; siteLive[site] += cls; }   // 1 in 16 blocks
 	}
 	guest::store<uint32_t>(payload - 16, cls);
