@@ -2297,6 +2297,50 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	{
+		// cc3_postdiag: shadow matrices frame by frame while the camera moves - the matrix the map is drawn with
+		// (into-map WorldViewProjection) against the one terrain/trees read it with (ShadowInfo), first draw of each
+		// kind per frame; logged for frames where any of them changed (up to 240 lines)
+		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static uint32_t fr = 0; static int lines = 0;
+		static float mapM[16], recvT[16], recvO[16], lastMap[16];
+		static bool hMap = false, hT = false, hO = false;
+		static int nMapDraws = 0, nRecvDraws = 0;
+		if (on && lines < 240)
+		{
+			if (fr != gFrameNo)
+			{
+				if (fr && hMap && memcmp(mapM, lastMap, sizeof mapM) != 0)
+				{
+					auto row = [](const float* m, int r) { char b[96]; snprintf(b, sizeof b, "[%.5g %.5g %.5g %.5g]", m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]); return std::string(b); };
+					log("SHF frame %u map(%d draws) r0 %s r3 %s | terrain %s r0 %s r1 %s r2 %s r3 %s | other %s r0 %s",
+						fr, nMapDraws, row(mapM, 0).c_str(), row(mapM, 3).c_str(), hT ? "" : "none", row(recvT, 0).c_str(), row(recvT, 1).c_str(), row(recvT, 2).c_str(), row(recvT, 3).c_str(), hO ? "" : "none", row(recvO, 0).c_str());
+					lines++;
+					memcpy(lastMap, mapM, sizeof mapM);
+				}
+				else if (fr && !hMap && nRecvDraws) { log("SHF frame %u: map not drawn, %d draws read it", fr, nRecvDraws); lines++; }
+				fr = gFrameNo; hMap = hT = hO = false; nMapDraws = nRecvDraws = 0;
+			}
+			uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+			bool intoMap = !isBack(dev.rt0) && rw == 1024 && rh == 1024;
+			auto grab = [&](const char* name, float* dst) {
+				for (auto& cc : vs->info.ctab)
+					if (cc.regSet == 2 && cc.name == name && cc.regIndex + 4 <= 256) { memcpy(dst, dev.vsF + 4 * cc.regIndex, 64); return true; }
+				return false;
+			};
+			if (intoMap) { nMapDraws++; if (!hMap) hMap = grab("WorldViewProjection", mapM); }
+			else if (isBack(dev.rt0))
+			{
+				float m[16];
+				if (grab("ShadowInfo", m))
+				{
+					nRecvDraws++;
+					if (gFxDiagHash == 0x778fb6c9) { if (!hT) { memcpy(recvT, m, 64); hT = true; } }
+					else if (!hO) { memcpy(recvO, m, 64); hO = true; }
+				}
+			}
+		}
+	}
+	{
 		// cc3_postdiag: shadows - the first draws into the 1024x1024 R32F shadow map, and the first terrain/object
 		// draws that sample it: states, textures, named constants and the translated shaders
 		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
