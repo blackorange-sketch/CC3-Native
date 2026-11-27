@@ -2317,7 +2317,7 @@ static void drawImpl(const DrawCall& dc)
 					lines++;
 					memcpy(lastMap, mapM, sizeof mapM);
 				}
-				else if (fr && !hMap && nRecvDraws) { log("SHF frame %u: map not drawn, %d draws read it", fr, nRecvDraws); lines++; }
+				else if (fr && !hMap && nRecvDraws > 5) { log("SHF frame %u: map not drawn, %d draws read it", fr, nRecvDraws); lines++; }
 				fr = gFrameNo; hMap = hT = hO = false; nMapDraws = nRecvDraws = 0;
 			}
 			uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
@@ -2337,6 +2337,48 @@ static void drawImpl(const DrawCall& dc)
 					if (gFxDiagHash == 0x778fb6c9) { if (!hT) { memcpy(recvT, m, 64); hT = true; } }
 					else if (!hO) { memcpy(recvO, m, 64); hO = true; }
 				}
+			}
+		}
+	}
+	{
+		// cc3_postdiag: SHM - after the map pass of every frame is finished (first draw that is not into the map), read the
+		// 1024x1024 R32F map back and log how much of it is covered (< 1.0), its centroid and min depth: does the
+		// map CONTENT flicker from frame to frame while the camera moves, or only what samples it? (up to 600 lines)
+		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static GLint mapFbo = 0; static bool wasInto = false; static int lines = 0;
+		if (on && lines < 600)
+		{
+			uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+			bool intoMap = !isBack(dev.rt0) && rw == 1024 && rh == 1024;
+			if (intoMap) { glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mapFbo); wasInto = true; }
+			else if (wasInto && mapFbo)
+			{
+				wasInto = false;
+				static std::vector<float> px;
+				px.resize(1024 * 1024 * 4);
+				GLint prevRead = 0, curDraw = 0;
+				glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+				glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &curDraw);
+				glFinish();
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, mapFbo);
+				while (glGetError() != GL_NO_ERROR) {}
+				glReadPixels(0, 0, 1024, 1024, GL_RGBA, GL_FLOAT, px.data());
+				GLenum er = glGetError();
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+				if (er == GL_NO_ERROR)
+				{
+					uint32_t cov = 0; double sx = 0, sy = 0, sz = 0; float mn = 1e9f;
+					for (uint32_t y = 0; y < 1024; y++)
+						for (uint32_t x = 0; x < 1024; x++)
+						{
+							float v = px[((size_t)y * 1024 + x) * 4];
+							if (v < 0.999f) { cov++; sx += x; sy += y; sz += v; if (v < mn) mn = v; }
+						}
+					log("SHM frame %u: covered %u texels centroid %.1f,%.1f mean z %.4f min z %.4f", gFrameNo, cov, cov ? sx / cov : 0.0, cov ? sy / cov : 0.0, cov ? sz / cov : 0.0, (double)mn);
+				}
+				else log("SHM frame %u: readback error %x", gFrameNo, er);
+				lines++;
+				(void)curDraw;
 			}
 		}
 	}
