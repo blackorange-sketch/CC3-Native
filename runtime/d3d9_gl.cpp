@@ -2189,6 +2189,66 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	{
+		// Post effects / trees diagnostics (create /sdcard/cc3_postdiag): one full frame of bloom, distortion and
+		// lookup-table draws, plus the first tree draws - pass, target, viewport, textures, raw vertices, constants.
+		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static uint32_t diagFrame = 0;
+		static int treeN = 0, total = 0;
+		uint32_t h = gFxDiagHash;
+		bool post = h == 0x4513f1cd || h == 0x9d52aa40 || h == 0x59462bf1 || h == 0x941599d0 || h == 0x263e4159;
+		bool tree = h == 0x121ed439 && gFxDiagTech == 0;
+		if (on && gFrameNo >= 1800 && total < 400 && ((post && (diagFrame == 0 || diagFrame == gFrameNo)) || (tree && treeN < 6)))
+		{
+			if (post) diagFrame = gFrameNo; else treeN++;
+			total++;
+			uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+			log("PD frame %u fx %08x tech %u pass %u prim %u cnt %u idx %d up %d | z %u zw %u zfunc %u blend %u src %u dst %u op %u cull %u atest %u aref %u cw %x srgb %u | rt %s %ux%u vp %u,%u,%u,%u scissor %u",
+				gFrameNo, h, gFxDiagTech, gFxDiagPass, dc.prim, dc.primCount, (int)dc.indexed, dc.upVerts ? 1 : 0, dev.rs[7], dev.rs[14], dev.rs[23], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[171],
+				dev.rs[22], dev.rs[15], dev.rs[24], dev.rs[168], dev.rs[194], isBack(dev.rt0) ? "back" : "tex", rw, rh, dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], dev.rs[174]);
+			std::string tx;
+			for (int i = 0; i < 8; i++)
+				if (Obj* t = dev.tex[i])
+				{
+					char b2[160]; snprintf(b2, sizeof b2, " t%d=%s %ux%u/f%u/l%u%s[addr %u/%u filt %u/%u/%u srgb %u]", i, objTag(t).c_str(), t->w, t->h, t->fmt, t->levels, t->rtTex ? "/RT" : "",
+						dev.samp[i][1], dev.samp[i][2], dev.samp[i][5], dev.samp[i][6], dev.samp[i][7], dev.samp[i][11]);
+					tx += b2;
+				}
+			log("PD   tex:%s", tx.c_str());
+			const uint8_t* vb = nullptr; uint32_t stride = 0; uint64_t vbSize = 0;
+			if (dc.upVerts) { vb = (const uint8_t*)dc.upVerts; stride = dc.upStride; vbSize = ~0ull; }
+			else if (dev.streams[0].vb && dev.streams[0].vb->data) { vb = (const uint8_t*)guest::host(dev.streams[0].vb->data) + dev.streams[0].offset; stride = dev.streams[0].stride; vbSize = dev.streams[0].vb->size - dev.streams[0].offset; }
+			if (vb && stride && !dc.indexed)
+			{
+				std::string o;
+				for (uint32_t k = 0; k < 4; k++)
+				{
+					uint64_t off = (uint64_t)(dc.startIndex + k) * stride;
+					if (off + stride > vbSize) break;
+					o += " [";
+					for (uint32_t b = 0; b + 4 <= stride && b < 48; b += 4) { float f; memcpy(&f, vb + off + b, 4); char fb[24]; snprintf(fb, sizeof fb, "%g ", (double)f); o += fb; }
+					o += "]";
+				}
+				log("PD   verts stride %u:%s", stride, o.c_str());
+			}
+			for (int st2 = 0; st2 < 2; st2++)
+			{
+				auto& ct = st2 == 0 ? vs->info.ctab : ps->info.ctab;
+				const float* base = st2 == 0 ? dev.vsF : dev.psF;
+				uint32_t maxReg = st2 == 0 ? 256 : 224;
+				std::string vv;
+				for (auto& cc : ct)
+				{
+					if (cc.regSet != 2 || cc.regIndex >= maxReg) continue;
+					char nb[64]; snprintf(nb, sizeof nb, " %s(c%u):", cc.name.c_str(), cc.regIndex); vv += nb;
+					for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4) && cc.regIndex + r < maxReg; r++)
+						{ char b5[96]; const float* f = base + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, "[%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+				}
+				if (vv.empty()) { const float* f = base; char b5[200]; snprintf(b5, sizeof b5, " c0-1 [%g %g %g %g][%g %g %g %g]", f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]); vv = b5; }
+				log("PD   %s%s", st2 == 0 ? "VS" : "PS", vv.c_str());
+			}
+		}
+	}
+	{
 		// Effects diagnostics (create /sdcard/cc3_fxdiag): describe the first draws of every alpha-blended
 		// shader pair during gameplay - state, textures, vertex layout, raw vertices and constants.
 		static bool fxOn = access("/sdcard/cc3_fxdiag", F_OK) == 0;

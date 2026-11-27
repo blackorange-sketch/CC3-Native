@@ -1004,7 +1004,7 @@ void fxApplyPass(Obj* o)
 			log("FXSTAT effect #%d: %zu params, blob %zu, techniques: %s", fx->diagId, fx->params.size(), fx->blob.size(), t.c_str());
 		}
 	}
-	gFxDiagCur = fx->diagId; gFxDiagTech = gPass.tech; gFxDiagBlob = (uint32_t)fx->blob.size();
+	gFxDiagCur = fx->diagId; gFxDiagTech = gPass.tech; gFxDiagBlob = (uint32_t)fx->blob.size(); gFxDiagHash = (uint32_t)(fx->hash >> 32); gFxDiagPass = gPass.pass;
 	syncShared(*fx);
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];
 	for (uint32_t i = 0; i < ps.sts.size(); i++) applyShaderState(*fx, ps, gPass.tech, gPass.pass, i);
@@ -1289,6 +1289,7 @@ namespace d3d
 {
 int gFxDiagCur = -1;
 uint32_t gFxDiagTech = 0;
+uint32_t gFxDiagHash = 0, gFxDiagPass = 0;
 uint32_t gFxDiagBlob = 0;
 bool fxStatOn() { static const bool on = access("/sdcard/cc3_fxstat", F_OK) == 0; return on; }
 }

@@ -13,6 +13,7 @@ namespace d3d
 // effect-usage statistics (verbose): effect applied last and its technique, counted per draw
 extern int gFxDiagCur;
 extern uint32_t gFxDiagTech;
+extern uint32_t gFxDiagHash, gFxDiagPass;   // upper 32 bits of the effect hash (as in "fx use"), pass index
 extern uint32_t gFxDiagBlob;   // blob size of that effect (identifies it, e.g. laser.fxo = 11012)
 bool fxStatOn();   // /sdcard/cc3_fxstat exists
 
