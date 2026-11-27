@@ -219,8 +219,7 @@ H("IDirect3DDevice9::Present")
 H("IDirect3DSwapChain9::Present") { glr::present(); SET(0); } END;
 
 // ---- drawing
-namespace glr { Obj* texOwner(Obj* o); }
-using glr::texOwner;
+static Obj* lutOwner(Obj* o) { if (o->iface == ISurface && o->parent) if (Obj* p = objectAt(o->parent)) return p; return o; }
 static std::atomic<uint32_t> drawCount{0};
 static void doDraw(const DrawCall& dc)
 {
@@ -246,7 +245,7 @@ static void doDraw(const DrawCall& dc)
 			for (int i = 0; i < 8; i++)
 				if (Obj* t = dev.tex[i])
 				{
-					Obj* ow = texOwner(t);
+					Obj* ow = lutOwner(t);
 					if (ow->iface != IVolume || !ow->data || (ow->ver == lastVer && ow->addr == lastAddr)) continue;
 					lastVer = ow->ver; lastAddr = ow->addr; saved++;
 					char path[64]; snprintf(path, sizeof path, "/sdcard/cc3_lut%d.bin", saved);
