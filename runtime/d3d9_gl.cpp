@@ -2220,9 +2220,17 @@ static void drawImpl(const DrawCall& dc)
 			if (vb && stride && !dc.indexed)
 			{
 				std::string o;
+				if (!dc.upVerts && dev.streams[0].vb) { char hb[96]; snprintf(hb, sizeof hb, " vb %s size %u usage %x off %u base %d", objTag(dev.streams[0].vb).c_str(), dev.streams[0].vb->size, dev.streams[0].vb->usage, dev.streams[0].offset, (int)dc.baseVertex); o += hb; }
+				if (dev.vdecl)
+					for (size_t i = 0; i < dev.vdecl->blob.size() / 8; i++)
+					{
+						DeclElem e; memcpy(&e, dev.vdecl->blob.data() + 8 * i, 8);
+						if (e.stream == 0xff) break;
+						char b3[48]; snprintf(b3, sizeof b3, " s%u+%u:t%u:u%u.%u", e.stream, e.offset, e.type, e.usage, e.index); o += b3;
+					}
 				for (uint32_t k = 0; k < 4; k++)
 				{
-					uint64_t off = (uint64_t)(dc.startIndex + k) * stride;
+					uint64_t off = (uint64_t)((dc.upVerts ? 0 : (int64_t)dc.baseVertex) + k) * stride;
 					if (off + stride > vbSize) break;
 					o += " [";
 					for (uint32_t b = 0; b + 4 <= stride && b < 48; b += 4) { float f; memcpy(&f, vb + off + b, 4); char fb[24]; snprintf(fb, sizeof fb, "%g ", (double)f); o += fb; }
@@ -2245,6 +2253,23 @@ static void drawImpl(const DrawCall& dc)
 				}
 				if (vv.empty()) { const float* f = base; char b5[200]; snprintf(b5, sizeof b5, " c0-1 [%g %g %g %g][%g %g %g %g]", f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]); vv = b5; }
 				log("PD   %s%s", st2 == 0 ? "VS" : "PS", vv.c_str());
+			}
+		}
+	}
+	{
+		// cc3_postdiag: per frame, the light colour (c182.x) and fog colour (c197.x) of every tree draw, for 12 frames -
+		// do the same trees switch between two lightings from frame to frame (flicker)?
+		static const bool on = access("/sdcard/cc3_postdiag", F_OK) == 0;
+		static uint32_t f0 = 0, curF = 0;
+		static std::string line;
+		if (on && gFrameNo >= 1800 && gFrameNo < (f0 ? f0 + 12 : ~0u))
+		{
+			if (!f0) f0 = gFrameNo;
+			if (curF != gFrameNo) { if (!line.empty()) log("PDT frame %u:%s", curF, line.c_str()); line.clear(); curF = gFrameNo; }
+			if (gFxDiagHash == 0x121ed439 && line.size() < 900)
+			{
+				char b[64]; snprintf(b, sizeof b, " %c%u:%.2f/%.2f/%u", gFxDiagTech ? 's' : 'd', dc.primCount, (double)dev.vsF[4 * 182], (double)dev.vsF[4 * 197], dev.rs[27]);
+				line += b;
 			}
 		}
 	}
