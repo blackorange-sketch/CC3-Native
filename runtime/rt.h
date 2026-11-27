@@ -77,7 +77,9 @@ bool vmRelease(uint32_t addr);
 bool fxExportWanted();
 void fxExportAdd(const std::string& name, std::vector<uint8_t>&& data);
 void fxExportFlush();
-void setHeapReclaim(void (*fn)());   // called (outside the heap lock) when the malloc arena is about to run out   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
+void setHeapReclaim(void (*fn)());
+extern thread_local uint64_t gAllocSite;   // who asks for the next gmalloc (heap census)
+std::string heapCensusLine();               // allocation sites that grew most since the last call   // called (outside the heap lock) when the malloc arena is about to run out   // VirtualFree MEM_RELEASE   // page granular, committed, zeroed
 
 // ---- strings
 std::string gstr(uint32_t a);                  // NUL-terminated byte string

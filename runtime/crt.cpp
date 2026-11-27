@@ -81,11 +81,18 @@ const struct DataRegs
 }
 
 // ---- memory
-IMP_C(DLL, malloc) { SET(gmalloc(ARG(0))); }
-IMP_C(DLL, calloc) { uint32_t n = ARG(0) * ARG(1); uint32_t p = gmalloc(n); memset(guest::host(p), 0, n); SET(p); }
+// the guest return address of an import call and the caller of that function (ebp frame): heap census site
+static inline uint64_t allocSite(CPU* c)
+{
+	uint32_t ret = guest::load<uint32_t>(c->r[ESP]), up = 0, bp = c->r[EBP];
+	if (bp > 0x10000 && bp < 0xfff00000u) up = guest::load<uint32_t>(bp + 4);
+	return (uint64_t)ret | ((uint64_t)up << 32);
+}
+IMP_C(DLL, malloc) { gAllocSite = allocSite(c); SET(gmalloc(ARG(0))); }
+IMP_C(DLL, calloc) { uint32_t n = ARG(0) * ARG(1); gAllocSite = allocSite(c); uint32_t p = gmalloc(n); memset(guest::host(p), 0, n); SET(p); }
 IMP_C(DLL, realloc) { SET(grealloc(ARG(0), ARG(1))); }
 IMP_C(DLL, free) { gfree(ARG(0)); }
-IMP_C(DLL, _aligned_malloc) { SET(gmalloc(ARG(0), ARG(1))); }
+IMP_C(DLL, _aligned_malloc) { gAllocSite = allocSite(c); SET(gmalloc(ARG(0), ARG(1))); }
 IMP_C(DLL, _aligned_free) { gfree(ARG(0)); }
 IMP_C(DLL, _aligned_realloc) { uint32_t n = gmalloc(ARG(1), ARG(2)); if (ARG(0)) { memcpy(guest::host(n), guest::host(ARG(0)), std::min(gsize(ARG(0)), ARG(1))); gfree(ARG(0)); } SET(n); }
 IMP_C(DLL, memcpy) { memmove(guest::host(ARG(0)), guest::host(ARG(1)), ARG(2)); SET(ARG(0)); }

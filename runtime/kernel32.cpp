@@ -501,7 +501,7 @@ IMP_STD(K, IsBadReadPtr, 2) { SET(ARG(0) == 0 ? 1 : 0); }
 IMP_STD(K, IsBadWritePtr, 2) { SET(ARG(0) == 0 ? 1 : 0); }
 IMP_STD(K, IsBadCodePtr, 1) { SET(ARG(0) == 0 ? 1 : 0); }
 IMP_STD(K, GetProcessHeap, 0) { SET(0x50000); }
-IMP_STD(K, HeapAlloc, 3) { uint32_t p = gmalloc(ARG(2)); if (ARG(1) & 8) memset(guest::host(p), 0, ARG(2)); SET(p); }
+IMP_STD(K, HeapAlloc, 3) { gAllocSite = guest::load<uint32_t>(c->r[ESP]); uint32_t p = gmalloc(ARG(2)); if (ARG(1) & 8) memset(guest::host(p), 0, ARG(2)); SET(p); }
 IMP_STD(K, HeapFree, 3) { gfree(ARG(2)); SET(1); }
 IMP_STD(K, HeapReAlloc, 4) { SET(grealloc(ARG(2), ARG(3))); }
 IMP_STD(K, HeapSize, 3) { SET(gsize(ARG(2))); }

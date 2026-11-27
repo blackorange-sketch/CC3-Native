@@ -1,3 +1,7 @@
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <unordered_map>
 #include <map>
 #include <mutex>
 
@@ -46,6 +50,31 @@ void commitTo(uint32_t end)
 void heapInit() {}
 uint64_t heapLiveBytes() { std::lock_guard<std::mutex> l(mu); return liveBytes; }
 
+// heap census (leak hunt): 1 in 16 blocks remember who allocated them (the game's return address and its caller,
+// set by the malloc imports through gAllocSite; 0 = the runtime itself)
+thread_local uint64_t gAllocSite = 0;
+namespace
+{
+std::unordered_map<uint32_t, std::pair<uint64_t, uint32_t>> census;
+std::unordered_map<uint64_t, int64_t> siteLive, siteLast;
+}
+std::string heapCensusLine()
+{
+	std::lock_guard<std::mutex> l(mu);
+	std::vector<std::pair<int64_t, uint64_t>> grow;
+	for (auto& kv : siteLive) grow.push_back({kv.second - siteLast[kv.first], kv.first});
+	std::sort(grow.begin(), grow.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	std::string o;
+	char b[96];
+	for (size_t i = 0; i < grow.size() && i < 10; i++)
+	{
+		uint64_t s = grow[i].second;
+		snprintf(b, sizeof b, " %08x<%08x:%+lldK(%lldK)", (uint32_t)s, (uint32_t)(s >> 32), (long long)(grow[i].first * 16 / 1024), (long long)(siteLive[s] * 16 / 1024));
+		o += b;
+	}
+	siteLast = siteLive;
+	return o;
+}
 namespace { void (*reclaimHook)() = nullptr; thread_local bool inReclaim = false; }
 void setHeapReclaim(void (*fn)()) { reclaimHook = fn; }
 
@@ -81,6 +110,11 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 		if (payload == block) payload += align;   // keep room for the header
 	}
 	liveBytes += cls;
+	{
+		uint64_t site = gAllocSite;
+		gAllocSite = 0;
+		if (((payload >> 4) & 15) == 0) { census[payload] = {site, cls}; siteLive[site] += cls; }   // 1 in 16 blocks
+	}
 	guest::store<uint32_t>(payload - 16, cls);
 	guest::store<uint32_t>(payload - 12, Magic);
 	guest::store<uint32_t>(payload - 8, block);   // original block start (differs when over-aligned)
@@ -97,6 +131,11 @@ void gfree(uint32_t p)
 	uint32_t cls = guest::load<uint32_t>(p - 16), block = guest::load<uint32_t>(p - 8);
 	if (watchAddr && p <= watchAddr && watchAddr < p + guest::load<uint32_t>(p - 16)) watchLog("free", p, 0);
 	guest::store<uint32_t>(p - 12, 0);
+	if (((p >> 4) & 15) == 0)
+	{
+		auto it = census.find(p);
+		if (it != census.end()) { siteLive[it->second.first] -= it->second.second; census.erase(it); }
+	}
 	freeBySize[cls].push_back(block);
 	liveBytes -= cls; freeBytes += cls;
 }
