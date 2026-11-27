@@ -375,10 +375,24 @@ static void getMatrix(const PRef& r, float* m, bool transpose)
 		}
 }
 
+// Names and strings handed to the game (parameter / technique descriptions, string parameters): one guest copy per
+// distinct string, as D3DX returns pointers into the effect. A new copy per call leaked every frame (the game
+// asks for parameter descriptions all the time) - the battle's ~1 MB/s heap growth.
+static uint32_t fxStr(const std::string& s)
+{
+	static std::mutex m;
+	static std::unordered_map<std::string, uint32_t> pool;
+	std::lock_guard<std::mutex> l(m);
+	auto it = pool.find(s);
+	if (it != pool.end()) return it->second;
+	uint32_t a = rt::newStr(s);
+	pool.emplace(s, a);
+	return a;
+}
 H("ID3DXEffect::GetParameter")
 {
 	FxInfo* fx = F(o);
-	if (!fx) { SET(newStr("param")); return; }
+	if (!fx) { SET(fxStr("param")); return; }
 	uint32_t idx = ARG(2);
 	if (!ARG(1)) { SET(idx < fx->params.size() ? mkHandle(fx, 1, idx) : 0); return; }
 	PRef b = refOf(o, ARG(1));
@@ -406,7 +420,7 @@ H("ID3DXEffect::GetParameterByName")
 	FxInfo* fx = F(o);
 	if (!ARG(2)) { SET(0); return; }
 	std::string n = gstr(ARG(2));
-	if (!fx) { SET(newStr(n)); return; }
+	if (!fx) { SET(fxStr(n)); return; }
 	PRef base;
 	if (ARG(1)) { base = refOf(o, ARG(1)); if (!base.valid()) { SET(0); return; } }
 	PRef r;
@@ -417,14 +431,14 @@ H("ID3DXEffect::GetParameterBySemantic")
 	FxInfo* fx = F(o);
 	if (!ARG(2)) { SET(0); return; }
 	std::string n = gstr(ARG(2));
-	if (!fx) { SET(newStr(n)); return; }
+	if (!fx) { SET(fxStr(n)); return; }
 	for (size_t i = 0; i < fx->params.size(); i++) if (strcasecmp(fx->params[i].semantic.c_str(), n.c_str()) == 0) { SET(mkHandle(fx, 1, (uint32_t)i)); return; }
 	SET(0);
 } END;
 H("ID3DXEffect::GetParameterElement")
 {
 	PRef b = refOf(o, ARG(1));
-	if (!b.valid()) { SET(F(o) ? 0 : newStr("elem")); return; }
+	if (!b.valid()) { SET(F(o) ? 0 : fxStr("elem")); return; }
 	uint32_t idx = ARG(2);
 	if (!b.ty->elements || idx >= b.ty->elements) { SET(0); return; }
 	PRef r = b;
@@ -454,8 +468,8 @@ H("ID3DXEffect::GetParameterDesc")
 		name = an->name; cls = an->cls; type = an->type; rows = an->rows; cols = an->cols; el = an->elements;
 		bytes = 4 * rows * cols * std::max(1u, el);
 	}
-	guest::store<uint32_t>(p, newStr(name));
-	guest::store<uint32_t>(p + 4, sem.empty() ? 0 : newStr(sem));
+	guest::store<uint32_t>(p, fxStr(name));
+	guest::store<uint32_t>(p + 4, sem.empty() ? 0 : fxStr(sem));
 	guest::store<uint32_t>(p + 8, cls);
 	guest::store<uint32_t>(p + 12, type);
 	guest::store<uint32_t>(p + 16, rows);
@@ -1164,11 +1178,11 @@ H("ID3DXEffect::GetTechniqueDesc")
 	memset(guest::host(p), 0, 12);
 	if (const FxTech* t = techOf(o, ARG(1)))
 	{
-		guest::store<uint32_t>(p, newStr(t->name));
+		guest::store<uint32_t>(p, fxStr(t->name));
 		guest::store<uint32_t>(p + 4, (uint32_t)t->passes.size());
 		guest::store<uint32_t>(p + 8, (uint32_t)t->anns.size());
 	}
-	else { guest::store<uint32_t>(p, newStr("T")); guest::store<uint32_t>(p + 4, 1); }
+	else { guest::store<uint32_t>(p, fxStr("T")); guest::store<uint32_t>(p + 4, 1); }
 	SET(0);
 } END;
 H("ID3DXEffect::GetPassDesc")
@@ -1178,7 +1192,7 @@ H("ID3DXEffect::GetPassDesc")
 	if (const HRec* r = getRec(ARG(1)); r && r->kind == 3 && r->fx == F(o) && r->a < r->fx->techs.size() && r->b < r->fx->techs[r->a].passes.size())
 	{
 		const FxPass& ps = r->fx->techs[r->a].passes[r->b];
-		guest::store<uint32_t>(p, newStr(ps.name));
+		guest::store<uint32_t>(p, fxStr(ps.name));
 		guest::store<uint32_t>(p + 4, (uint32_t)ps.anns.size());
 	}
 	SET(0);
@@ -1245,7 +1259,7 @@ H("ID3DXEffect::GetString")
 	std::string sv = an ? an->str : "";
 	if (!an) { PRef pr = refOf(o, ARG(1)); if (pr.valid()) sv = pr.p->str; }
 	{ static int n = 0; if (n++ < 80) log("fx: GetString h %x -> %s '%s'", ARG(1), an ? "ann" : "param", sv.c_str()); }
-	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(sv));
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), fxStr(sv));
 	SET(0);
 } END;
 H("ID3DXEffect::SetTechnique") { uint32_t idx; if (F(o) && techOf(o, ARG(1), &idx)) F(o)->current = idx; SET(0); } END;
