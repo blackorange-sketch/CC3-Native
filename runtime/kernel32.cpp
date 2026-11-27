@@ -583,12 +583,36 @@ void waitWhileBackground()
 	gPausedNs += rdtsc_host() - t0;
 }
 }
-IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); SET((uint32_t)(gameNs() / 1000000)); }
-IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); SET((uint32_t)(gameNs() / 1000000)); }
+// Busy-wait relief: CC3 waits for its next frame by reading the clock in a loop (40% of the game thread was
+// clock reads). When one call site reads the clock again and again with nothing else done in between (a gap under
+// 50 us, 64 times in a row), each further read first sleeps 250 us - the wait ends at the same moment, the core idles.
+// /sdcard/cc3_nospinsleep turns it off.
+static void spinRelief(CPU* c, const char* what)
+{
+	static const bool off = access("/sdcard/cc3_nospinsleep", F_OK) == 0;
+	if (off) return;
+	struct S { uint32_t site = 0; uint64_t last = 0; uint32_t run = 0; };
+	static thread_local S st;
+	uint32_t site = guest::load<uint32_t>(c->r[ESP]);
+	uint64_t now = rdtsc_host();
+	if (site == st.site && now - st.last < 50000) st.run++;
+	else st.run = 0;
+	st.site = site;
+	if (st.run >= 64)
+	{
+		static std::atomic<int> nl{0};
+		if (st.run == 64 && nl.fetch_add(1) < 6) log("spin: %s polled in a loop from %08x - sleeping between reads", what, site);
+		std::this_thread::sleep_for(std::chrono::microseconds(250));
+		now = rdtsc_host();
+	}
+	st.last = now;
+}
+IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); spinRelief(c, "GetTickCount"); SET((uint32_t)(gameNs() / 1000000)); }
+IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); spinRelief(c, "timeGetTime"); SET((uint32_t)(gameNs() / 1000000)); }
 IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { static int n = 0; if (n++ < 4) log("timeBeginPeriod(%u)", ARG(0)); SET(0); }
 IMP_ID("WINMM.dll", "timeEndPeriod", timeEndPeriod, 4) { SET(0); }
 IMP_STD(K, QueryPerformanceFrequency, 1) { guest::store<uint64_t>(ARG(0), 1000000000ull); SET(1); }
-IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), gameNs()); SET(1); }
+IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); spinRelief(c, "QueryPerformanceCounter"); guest::store<uint64_t>(ARG(0), gameNs()); SET(1); }
 IMP_STD(K, GetSystemTimeAsFileTime, 1) { guest::store<uint64_t>(ARG(0), winFileTime()); }
 IMP_STD(K, GetLocalTime, 1)
 {
